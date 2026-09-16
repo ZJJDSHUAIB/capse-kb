@@ -1,0 +1,343 @@
+# -*- coding: utf-8 -*-
+r"""
+第 4 课:路由(规则版基线)。
+
+═══ 这一版的规则是从哪来的 ═══
+    不是我定的,是张君杰对着 10 个问题一条条判出来的。他给出的两条:
+        ① "进数据库而且有确定答案的进 SQL"
+        ② "描述性的"
+    再对着 10 条答案反推出的三步结构(见下)。
+
+═══ 结构(第一版画错了,跑完才改对) ═══
+    ① 它要【一个数】还是要【一段话】?     ← 必须最先判,它决定下一步问的是什么
+         要数 → ② 这个数在库里吗?   不在 → 拒答
+                                    在   → SQL
+         要话 → 检索(不需要期次,也不需要事前查"在库吗")
+    ③ 跨口径吗?                          是 → 加标注
+
+    ※ 为什么第①步必须排在最前面 —— 我第一版排错了,证据在下面:
+      第一版我把"这个答案在库里吗"当成了全局第一道闸,还顺手加了
+      "问题里没期次 → 拒答"。结果"报告的指标为什么调整过"这种
+      【根本不需要期次】的叙述题,被我拒了。
+      → 【我把第②步的问题,搬到了第①步当闸门。】
+
+    ※ 而他自己在 #5/#7 犯的错,是同一个形状:
+      他因为"口径变了"拒答(那是第③步的问题),
+      但答案明明在库里(4.15 / 4.23 都查得到)。
+      → 【把第③步的问题,搬到了第①步当闸门。】
+
+      两个错,一个形状,一个后果:把能答的问题藏起来。
+
+    ※ 数值型 vs 叙述型,两者的"在库吗"不是同一句话:
+        数值型:可以【事先查】Schema —— 查不到就拒答,这是诚实的
+        叙述型:必须【搜过才知道】—— 事先拒答 = 把"我还没搜"说成"库里没有"
+      这就是"拒答不能是第三条并列的路"的真正原因:
+      它只是【数值型分支的可用性检查】产出的副产品。
+
+    ※ 代价不对称:SQL/检索答错,用户能核对;拒答错了,用户拿不到数据而且不会知道。
+      "拿不准就拒答"是错的 —— 拒答是最贵的选项,不是最安全的。
+
+═══════ 第一版跑出来的结果(6/10),留在这里当证据 ═══════
+    ✅ 1 2 3 6 9 10
+    ✗ 4 8   期望检索 → 实际拒答   ← 我的 bug,已修(就是上面那条)
+    ✗ 5 7   期望 SQL  → 实际检索   ← 规则的墙,没修,见下
+
+═══════ 没修的那面墙,是这一课最值钱的东西 ═══════
+    "哪个分高" —— 关键这张表两边都不沾:
+        要数  多少|几|第几|排名|名次|前\d|最高|最低|分数|得分|样本量|家数
+        要话  为什么|为何|怎么|如何|说明|原因|介绍|解释|哪些|什么情况|过程
+    而 #5 的跨口径标注【判对了】、#7 的同口径无标注【也判对了】。
+    → 第③步全对,错的只有第②步:"这题要数还是要话"。
+
+    【补词是跑步机】:补上"哪个.*高",还有"涨了吗""差多少""比谁强"
+    —— 问法有无穷变体,关键词表不可能穷举。补一个,漏两个。
+    所以这一版【故意不补】,让它停在"判不出"上,当作第 5 课的对照组。
+
+    → "判不出"这个状态本身是设计,不是缺陷:
+      判不出就猜一个分支,错了【看不出来】—— 那是第 3 课定义的"坏了"。
+      所以宁可让它显式地挂在"判不出"上,也不给它一个静默的默认值。
+
+═══ 为什么【规则版】而不是直接上大模型 ═══
+    和前面几课一个道理:先有基线,才有对照。
+    规则版撞墙的地方,正是大模型该上场的地方 —— 那时你能指着具体的失败案例说
+    "这里我换成了模型",而不是"我觉得模型更好"。
+
+    预判它会撞的墙(跑完见分晓):
+        用户问法的无穷变体 —— "浦东" / "上海浦东" / "PVG" 指同一个机场;
+        "最近一期" / "去年三季度" 要靠相对时间推理。
+        规则写成正则,而正则不可能枚举完所有说法。
+"""
+import sys, io, re
+import sqlite3
+from pathlib import Path
+
+DB = Path(r"D:\capse-kb\data\processed\capse.db")
+
+# ── 期次 ──────────────────────────────────────────────
+# 季度:"2025Q4" / "2025q4" / "2025年4季度"? 后者口语里是 Q4,但"2025年第1季度"...
+# 实测语料只用 YYYYQN 写法。规则版先只认这一种 —— 认不出就交给第①步拒答。
+QUARTER = re.compile(r'(\d{4})\s*[Qq]\s*([1-4])')
+YEARLY  = re.compile(r'(\d{4})\s*年度?')
+
+# ── 问法类型(决定第①步走表还是走文字) ──────────────────
+# ※ 这两张表是【收紧过的】,不是一开始那版。收紧的理由见文件头"级联的前提"。
+#   规则:只留【不可能有别的意思】的词。有一点点歧义的,一律不放 ——
+#        放在这里,它就会【有把握地判错】,而且判错之后不会升级给模型。
+#
+#   删掉的词和原因:
+#       "如何"  → "表现如何"是问分数(上面实测踩过)
+#       "哪些"  → "前5名是哪些机场"是问数
+#       "怎么"  → "怎么排的"是问数
+#       "几"    → "几个原因"是问话
+NUMERIC = re.compile(r'多少|几分|几期|第几|排名|名次|前\s*\d|最高|最低|得分|分数|样本量|家数')
+PROSE   = re.compile(r'为什么|为何|原因|背景|变更|介绍|简介')
+
+
+def load_airports(con):
+    """库里的机场全名 → 去掉通用后缀的简称,用于口语匹配。
+
+    "上海浦东国际机场" → "上海浦东"      (用户会说"上海浦东")
+    "北京首都国际机场" → "北京首都"
+    这是规则版最脆的地方 —— 用户也可能说"浦东""首都机场",那就要认不出来了。
+    """
+    out = {}
+    for (name,) in con.execute("SELECT DISTINCT 机场 FROM 综合得分"):
+        core = name
+        for suf in ("国际机场", "机场"):
+            if core.endswith(suf):
+                core = core[: -len(suf)]
+                break
+        out[core] = name
+    return out
+
+
+def load_indicators(con):
+    return [r[0] for r in con.execute("SELECT DISTINCT 指标 FROM 指标得分")]
+
+
+def find_periods(q):
+    """问题里提到的季度。返回集合(可能空)。"""
+    return {f"{y}Q{m}" for y, m in QUARTER.findall(q)}
+
+
+def mentions_annual(q):
+    """提到"年度报告"吗? —— 年度报告【没有入库】,是拒答的第一号来源。"""
+    return "年度" in q and not QUARTER.search(q)
+
+
+def find_airport(con, q, airports):
+    """在问题里找机场简称。取最长匹配(避免"上海浦东"被"上海"这种短名抢走)。"""
+    hits = [core for core in airports if core in q]
+    return airports[max(hits, key=len)] if hits else None
+
+
+def find_indicator(q, indicators):
+    hits = [i for i in indicators if i in q]
+    return max(hits, key=len) if hits else None
+
+
+NUMBER = re.compile(r'\d+(?:\.\d+)?')
+
+
+def verify(con, q, periods, airport, hits):
+    """事后验证:走了检索的题,【答之前】回头看一眼 —— 这题真的该走检索吗?
+
+    ═══ 为什么要"事后"再验一次 ═══
+        路由是【事前】判的,判错了它自己不知道。
+        但答完之前还有一道机会:看看检索回来的东西,到底能不能回答这个问句。
+
+    ═══ 两边对不上 = 信号 ═══
+        问句里【应该有】什么          vs   检索回来的【实际有】什么
+        ─────────────────────────────────────────────────
+        有期次 + 有机场                     一个数字都没有
+        → 用户问的是"某个机场某一期的数据"
+        → 而检索回来的文字里根本没有数
+        → 这题八成是要数的,【判错了】
+
+    ═══ 这个检查的边界(必须写清楚,否则会变成新的幻觉) ═══
+        它只能抓【一边有、另一边没有】这种粗的对不上。
+        如果检索回来的文字里【顺带】出现了别的数字(报告里到处是数字),
+        它就抓不住了 —— 那不是判对了,是【检查被绕过去了】。
+        兜底检查不是安全保证,只是把"完全没查"变成"查了一道"。
+    """
+    # 问句这一边:期次 + 机场 都在,说明问的是"某个机场某一期"
+    asks_about_one_airport = bool(periods) and airport is not None
+    if not asks_about_one_airport:
+        return None                      # 问句本身就不是这个形状,不适用
+
+    # 检索那一边:回来的东西里有没有数
+    has_number = any(NUMBER.search(h["文本"]) for h in hits)
+
+    if not hits:
+        return "检索一条都没回来,但问句里有期次有机场 —— 判错了,该走 SQL"
+    if not has_number:
+        return "检索回来了内容,但里面一个数字都没有 —— 而问句要的是一个数,判错了"
+    return None
+
+
+def cross_version(con, periods):
+    """第③步:跨口径吗? 只有"比较两期及以上"才谈得上跨口径,单期查询无所谓。"""
+    if len(periods) < 2:
+        return False, ""
+    vers = {r[0] for r in con.execute(
+        f"SELECT 口径版本 FROM meta WHERE 期次 IN ({','.join('?' * len(periods))})",
+        sorted(periods))}
+    if len(vers) > 1:
+        return True, f"跨口径: {sorted(vers)} —— 两期的尺子不同,数字不可直接比较"
+    return False, ""
+
+
+def route(con, q, airports, indicators, intent=None):
+    """返回 (去向, 标注, 理由)。去向 ∈ {SQL, 检索, 拒答, 判不出}。
+
+    intent: None = 用关键词表判(规则版)
+            "A"  = 强制"要数"(外部判定的结果,比如大模型)
+            "B"  = 强制"要话"
+    ※ 为什么要留这个入口:
+      关键词表判不出的题(那 8 种说法里的 2 种),不能就地放弃 ——
+      上面还有一层(第 5 课接的大模型)能判。留个入口,它判完能重新走一遍,
+      走的是【同一条】后面的流程,不需要在别处再写一遍可用性检查。
+    """
+    periods = find_periods(q)
+    airport = find_airport(con, q, airports)
+    indicator = find_indicator(q, indicators)
+
+    # ══ 第①步:它要【一个数】,还是要【一段话】? ═══════════
+    #    ※ 这一步必须最先做。第一版我把它排在第②步,先用"在库吗"卡了一道,
+    #      结果把"报告的指标为什么调整过"这种不需要期次的叙述题拒掉了。
+    if intent == "A":
+        wants_num, wants_prose = True, False
+    elif intent == "B":
+        wants_num, wants_prose = False, True
+    else:
+        wants_num   = bool(indicator) or bool(NUMERIC.search(q))
+        wants_prose = bool(PROSE.search(q))
+
+    if not wants_num and not wants_prose:
+        # 判不出 —— 不猜。猜一个分支,错了【看不出来】,那是"坏了"。
+        # 宁可显式挂在这里,也不给一个静默的默认值。
+        flag, why = cross_version(con, periods)
+        return "判不出", flag, "问法既不像要数也不像要话,关键词表里没有能匹配的"
+
+    if wants_prose and not wants_num:
+        # ══ 叙述型:答案住在文字里 ═══════════════════════════
+        #    【这里不查"在库吗"】—— 文字里有没有,必须搜过才知道。
+        #    事先拒答 = 把"我还没搜"说成"库里没有"。
+        flag, why = cross_version(con, periods)
+        return "检索", flag, why
+
+    # ══ 数值型:先查这个数在库里吗 ═══════════════════════
+    #    数值型的可用性是【可以事先查 Schema 的】,查不到就拒答,这是诚实的。
+    if mentions_annual(q):
+        return "拒答", False, "年度报告没有入库(切片时因文件名无季度编号被跳过)"
+
+    if not periods:
+        return "拒答", False, "问的是数值,但问题里没有可识别的期次,不知道查哪一期"
+
+    known = {r[0] for r in con.execute("SELECT 期次 FROM meta")}
+    unknown = periods - known
+    if unknown:
+        return "拒答", False, f"这些期次不在库里: {sorted(unknown)}"
+
+    # 指标级数据只有 2025Q4 —— 这是语料的真实形状,不是缺失
+    if indicator and periods - {"2025Q4"}:
+        return "拒答", False, (f"指标级(一级指标)数据只有 2025Q4 一期,"
+                               f"问题涉及 {sorted(periods - {'2025Q4'})}")
+
+    # ══ 第③步:跨口径吗? ════════════════════════════════
+    flag, why = cross_version(con, periods)
+    return "SQL", flag, why
+
+
+# ══ 张君杰判的 10 条,当作回归测试 ══════════════════════
+# 格式: (问题, 期望去向, 期望标注)
+# 前 8 条是他的原始判断;后 2 条(#5 #7)是【修正后】的正确值 ——
+# 他原来都判了"拒答",错在把第③步的问题当成了第①步的问题。
+CASES = [
+    ("2025Q4 上海浦东国际机场的综合得分是多少",        "SQL",  False),
+    ("2024Q3 上海浦东国际机场的机场安检得分是多少",     "拒答", False),
+    ("2025Q4 综合得分前 5 名是哪些机场",               "SQL",  False),
+    ("报告的测评指标为什么调整过",                     "检索", False),
+    ("2023Q3 和 2025Q4 的上海浦东,哪个分高",           "SQL",  True),   # ← 修正
+    ("2025Q4 的样本量是多少",                        "SQL",  False),
+    ("2025Q1 和 2025Q4 的上海浦东,哪个分高",           "SQL",  False),  # ← 修正
+    ("2023 年删掉了哪些指标",                         "检索", False),
+    ("2024年度报告里,全年得分最高的机场是哪个",         "拒答", False),
+    ("2025Q4 上海浦东在 7 个一级指标里,哪项最高",       "SQL",  False),
+]
+
+
+def main():
+    con = sqlite3.connect(DB)
+    airports = load_airports(con)
+    indicators = load_indicators(con)
+
+    ok = 0
+    print(f"{'#':<3}{'你的判断':<26}{'系统去向':<8}{'标注':<6}{'判定'}")
+    print("-" * 78)
+    for i, (q, want_w, want_f) in enumerate(CASES, 1):
+        w, f, why = route(con, q, airports, indicators)
+        good = (w == want_w and f == want_f)
+        ok += good
+        print(f"{i:<3}{q[:24]:<26}{w:<8}{'要' if f else '不要':<6}{'✅' if good else '★ 不符'}")
+        if not good:
+            print(f"     期望 {want_w} / {'要' if want_f else '不要'}  —— 实际理由: {why or '—'}")
+        elif why:
+            print(f"     └ {why}")
+    print("-" * 78)
+    print(f"  {ok}/{len(CASES)} 条符合")
+
+    print("\n=== 规则版在哪里撞墙(这是本课的重点,不是失败) ===")
+    probes = [
+        ("浦东去年三季度考了多少分",        '"浦东"认不出(库里是"上海浦东")+ "去年三季度"是相对时间'),
+        ("最新一期样本量多少",              '"最新一期"要查 max(期次),正则算不出来'),
+        ("首都机场怎么样",                  '"首都机场"认不出(库里叫"北京首都国际机场")'),
+        ("2025Q4 和上一期比,上海浦东涨了吗",  '"上一期"是相对时间;且"涨了吗"两边都不沾'),
+    ]
+    for q, note in probes:
+        w, f, why = route(con, q, airports, indicators)
+        print(f"  {q:<30} → {w:<4}  {why or '(无标注)'}")
+        print(f"  {'':<30}   ↳ {note}")
+
+    # 关键词表能覆盖多少种问法? —— 这是"补词跑步机"的量化证据
+    print("\n=== 同一件事(2025Q4 上海浦东的分数),换 8 种说法 ===")
+    same = ["上海浦东 2025Q4 综合得分是多少", "上海浦东 2025Q4 考了几分",
+            "上海浦东 2025Q4 排第几",         "上海浦东 2025Q4 什么水平",
+            "2025Q4 上海浦东拿了几分",        "上海浦东 2025Q4 得多少分",
+            "2025Q4 上海浦东表现如何",        "上海浦东 2025Q4 的分数"]
+    # 这 8 句问的是【同一件事、同一个答案】,所以非 SQL 就是错的。
+    # 加了事后验证之后,再看:判错的那几句,【有没有人拦住它】。
+    sys.path.insert(0, str(Path(__file__).parent))
+    from build_search import search
+
+    loud, silent, caught = [], [], []
+    for q in same:
+        w, _, _ = route(con, q, airports, indicators)
+        mark = ""
+        if w != "SQL":
+            why = verify(con, q, find_periods(q), find_airport(con, q, airports),
+                         search(con, q, k=5) if w == "检索" else [])
+            if w == "判不出":
+                loud.append(q)
+                mark = "   ★ 判不出(看得见)"
+            elif why:
+                caught.append((q, why))
+                mark = "   ★ 路由判错了,但被事后验证拦住 ✅"
+            else:
+                silent.append(q)
+                mark = "   ★★ 路由判错,而且没人发现"
+        print(f"  {q:<28} → {w}{mark}")
+
+    print(f"\n  → 8 句同一个答案:走对 6 句,走错 2 句")
+    print(f"       判不出、看得见        : {len(loud)} 句")
+    print(f"       ★判错、但被验证拦住    : {len(caught)} 句  ← 事后验证挣到的")
+    print(f"       ★判错、且无人发现      : {len(silent)} 句  ← 还剩多少")
+    for q, why in caught:
+        print(f"            {q}\n              └ {why}")
+    for q in silent:
+        print(f"            {q}  ← 验证也没抓住")
+
+
+if __name__ == "__main__":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    main()

@@ -1,0 +1,155 @@
+# -*- coding: utf-8 -*-
+r"""
+把大模型接进链子的那两处 —— 并且【和规则版对着跑】。
+
+═══ 为什么要有这个对照文件 ═══
+    第 4 课的 route.py 用关键词表判"要数还是要话",我量化了它有多脆:
+        同一件事换 8 种说法,它错 2 种。
+    但"换成大模型"不能只是一句话 —— 要拿【同一批题】跑出两个数,
+    你才能说"从 6/8 变成 8/8",而不是"我觉得模型更好"。
+
+    ※ 这是第 3 课"先有基线才有对照"的第二次应用。
+      第一次是关键词检索 vs 向量检索(第 7 课),这一次是规则 vs 模型。
+
+═══ 接进来的两处,都是【判】,不是【答】═══
+    ① judge_intent(q)   这题要数还是要话?                → 替掉关键词表
+    ② rewrite_query(q)  把问句变成能搜的词 + 补同义词      → 补上检索前缺的那一步
+
+    ※ 第②处修的是第 5 课验收时暴露的四个原因里,前三个:
+        整句丢进去搜 / 词不对 / 同义词。
+      第四个(k 太小)不是模型的事,那是参数,归第 6 课评估去定。
+
+═══ 给模型留【不确定】的出口 ═══
+    judge_intent 的第三个选项是 C(拿不准)。
+    第 4 课的结论:判错是静默的,判不出是看得见的。
+    所以宁可让它说"拿不准",不要逼它在 A/B 里猜 ——
+    逼它二选一,就等于把"判不出"这个安全状态取消了。
+"""
+import sys, io
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from llm import chat, LLMError
+from route import (load_airports, load_indicators, find_periods,
+                   find_airport, find_indicator, route)
+import sqlite3
+
+DB = Path(r"D:\capse-kb\data\processed\capse.db")
+
+INTENT_SYS = """你在给一个民航满意度知识库做路由。
+
+库里有两样东西:
+
+A【数据表】结构化数据,能查能算:
+   - 每个机场每一期的综合得分、排名、样本量、机场数
+   - 2025Q4 这一期,每个机场的 7 个一级指标得分
+
+B【文字文档】9 份季度报告的正文:
+   - 测评背景、指标说明、指标变更说明、CAPSE 简介
+
+判断下面这个问题,答案应该从 A 拿,还是从 B 拿。
+
+只回一个字母:
+A = 答案是数字或名次,要去表里查
+B = 答案是一段说明文字,要去文档里翻
+C = 拿不准
+
+不要解释,不要标点,只回一个字母。"""
+
+REWRITE_SYS = """你在给一个中文知识库做检索预处理。
+
+把用户的问题改写成检索关键词,要求:
+1. 去掉"多少、为什么、哪些、请问、是什么"这类疑问词和虚词
+2. 只留能直接拿去搜的实词,2-6 个,用空格分开
+3. 【重要】同一件事如果原文可能用了别的说法,把那些说法也列上。
+   例:用户说"调整",报告原文写的是"变更",两个都要列。
+
+只输出关键词,用空格分开,不要解释,不要编号。"""
+
+
+def judge_intent(q):
+    """第②步:要数还是要话。返回 'A' / 'B' / 'C'。"""
+    r = chat(q, system=INTENT_SYS, max_tokens=4).strip().upper()
+    for ch in r:
+        if ch in "ABC":
+            return ch
+    return "C"                      # 回了个奇怪的东西,一律当"拿不准"
+
+
+def rewrite_query(q):
+    """检索前:把问句变成关键词。"""
+    return chat(q, system=REWRITE_SYS, max_tokens=80).strip()
+
+
+# ══ 对照用的题:和 route.py 跑的是同一批 ══════════════════
+# (问题, 正确答案: A=要数 / B=要话)
+CASES = [
+    ("2025Q4 上海浦东国际机场的综合得分是多少",        "A"),
+    ("2025Q4 的样本量是多少",                        "A"),
+    ("2025Q4 综合得分前 5 名是哪些机场",               "A"),
+    ("2023Q3 和 2025Q4 的上海浦东,哪个分高",           "A"),
+    ("2025Q4 上海浦东在 7 个一级指标里,哪项最高",       "A"),
+    ("报告的测评指标为什么调整过",                     "B"),
+    ("2023 年删掉了哪些指标",                         "B"),
+    ("2024Q3 上海浦东国际机场的机场安检得分是多少",     "A"),
+    ("2024年度报告里,全年得分最高的机场是哪个",         "A"),
+    ("2025Q4上海浦东表现如何",                        "A"),
+    # ── 第 4 课那 8 种说法,全部是在问同一个分数 ──
+    ("上海浦东 2025Q4 综合得分是多少",                 "A"),
+    ("上海浦东 2025Q4 考了几分",                      "A"),
+    ("上海浦东 2025Q4 排第几",                        "A"),
+    ("上海浦东 2025Q4 什么水平",                      "A"),
+    ("2025Q4 上海浦东拿了几分",                       "A"),
+    ("上海浦东 2025Q4 得多少分",                      "A"),
+    ("2025Q4 上海浦东表现如何",                       "A"),
+    ("上海浦东 2025Q4 的分数",                        "A"),
+]
+
+# 规则版判"数"还是"话",从 route() 的返回值反推
+RULES_MAP = {"SQL": "A", "检索": "B", "判不出": "C", "拒答": "?"}
+
+
+def main():
+    con = sqlite3.connect(DB)
+    airports = load_airports(con)
+    indicators = load_indicators(con)
+
+    print("═" * 76)
+    print("第②步:要数还是要话 —— 规则版 vs 大模型")
+    print("═" * 76)
+    print(f"{'问句':<30}{'规则':<6}{'模型':<6}{'正确':<6}{'谁对'}")
+    print("-" * 76)
+
+    r_ok = m_ok = 0
+    for q, want in CASES:
+        rules, _, _ = route(con, q, airports, indicators)
+        r = RULES_MAP.get(rules, "?")
+        try:
+            m = judge_intent(q)
+        except LLMError as e:
+            print(f"  ★ 模型调用失败:{e}")
+            return
+
+        r_ok += (r == want)
+        m_ok += (m == want)
+        who = ("规则✅" if r == want else "规则✗") + " " + ("模型✅" if m == want else "模型✗")
+        print(f"{q[:28]:<30}{r:<6}{m:<6}{want:<6}{who}")
+
+    print("-" * 76)
+    print(f"  规则版 {r_ok}/{len(CASES)}      大模型 {m_ok}/{len(CASES)}")
+
+    # ── 第二处:改写查询 ──────────────────────────────
+    print("\n" + "═" * 76)
+    print("检索前的那一步:把问句变成能搜的词")
+    print("═" * 76)
+    for q in ["报告的测评指标为什么调整过", "2023 年删掉了哪些指标",
+              "2025Q4上海浦东表现如何"]:
+        print(f"\n  问:{q}")
+        print(f"  改写:{rewrite_query(q)}")
+
+    con.close()
+
+
+if __name__ == "__main__":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    main()
