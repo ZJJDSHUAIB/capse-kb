@@ -92,6 +92,21 @@ YEARLY  = re.compile(r'(\d{4})\s*年度?')
 NUMERIC = re.compile(r'多少|几分|几期|第几|排名|名次|前\s*\d|最高|最低|得分|分数|样本量|家数')
 PROSE   = re.compile(r'为什么|为何|原因|背景|变更|介绍|简介')
 
+# ── ★ 第 7 课实验 1:点名了报告的【段落】 ═════════════════
+#    "…里"= 用户指着报告的某一段说话(报告里 / 概况里 / 简介里 / 说明里),
+#    答案住在那段【文字】里,而不是表格的某个格子里。
+#
+#    为什么它是【一条规则】而不是【往词表里加词】:
+#      上面两张表是"用户用了哪个词",穷举不完 —— 补一个,漏两个。
+#      而"…里"是"用户在指一段文档",这是【说法背后的结构】,只有一种形状。
+#
+#    实测(评估集 60 道,见 tools/probe_route.py):
+#      期望走检索的 15 道里,12 道带"…里";
+#      期望走 SQL 的 34 道,【一道都不带】。
+#    带"…里"的 SQL/拒答题只有两道:#57(带"报告里",但问的是"第 6 页没进库"这种
+#      系统内部的事,本来就该拒)和 #60(年度报告,被下面 mentions_annual 拦掉)。
+DOC_SECTION = re.compile(r'(?:报告|概况|简介|说明|声明|测评|简报|名录|附录)里')
+
 
 def load_airports(con):
     """库里的机场全名 → 去掉通用后缀的简称,用于口语匹配。
@@ -205,9 +220,18 @@ def route(con, q, airports, indicators, intent=None):
     # ══ 第①步:它要【一个数】,还是要【一段话】? ═══════════
     #    ※ 这一步必须最先做。第一版我把它排在第②步,先用"在库吗"卡了一道,
     #      结果把"报告的指标为什么调整过"这种不需要期次的叙述题拒掉了。
+    #    ※ 第 7 课实验 1:"…里"(点名段落)排在这张表【前面】,数词说了不算。
+    #      #43「…概况里,一级指标和二级指标各多少项」就是被"多少"两个字
+    #      拖去 SQL 的 —— 而库里根本没有"一级指标数"这一列,SQL 只能答出
+    #      一个不相干的"综合得分前 5 名"。答案其实印在概况页上。
+    #      ⚠ 年度报告整份没入库,那道闸比这里更靠前,不能被"…里"抢过来。
+    doc_section = bool(DOC_SECTION.search(q)) and not mentions_annual(q)
+
     if intent == "A":
         wants_num, wants_prose = True, False
     elif intent == "B":
+        wants_num, wants_prose = False, True
+    elif doc_section:
         wants_num, wants_prose = False, True
     else:
         wants_num   = bool(indicator) or bool(NUMERIC.search(q))
