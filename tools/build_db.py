@@ -47,8 +47,8 @@ r"""
 """
 import sys, io, csv, sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-PROCESSED = Path(r"D:\capse-kb\data\processed")
 DB        = PROCESSED / "capse.db"
 
 # 与 build_meta_table.py 里的 VALID_VERSIONS 一致。
@@ -166,12 +166,36 @@ def check(con, source):
     print("  往返一致  ✅")
 
     # ③ 约束自检 —— 拿【非法数据】去撞,撞不进去才算约束生效
+    #  ═══ ★★★ 2026-09-22:从【位置写法】改成【列名写法】 ═══
+    #  【为什么 —— 实测踩到,而且它一直没被发现】
+    #      上面三条 综合得分 的用例写的是 `VALUES (?,?,?)`(三个值),
+    #      而 综合得分 表【有 4 列】(期次/机场/得分/来源)——
+    #      某一次给表加了「来源」列,这三个用例【没跟着改】。
+    #
+    #      ★ 后果:跑 build_db.py 会在这里崩:
+    #          sqlite3.OperationalError: table 综合得分 has 4 columns
+    #          but 3 values were supplied
+    #      ★★ 而它【藏了这么久,是因为没人重跑 build_db.py】——
+    #         库一直在,大家用的都是那份现成的。
+    #         直到第 14 课做"别人 clone 下来能不能跑",第一次真的从头跑,才撞出来。
+    #      ★★★ 所以把位置写法换成列名写法:
+    #           位置写法 = 把"第几个"和"是什么"绑死了 —— 表加一列就全错。
+    #           列名写法不依赖顺序,也不依赖列数。
+    #           **这和"同一个字段有两个身份"是同一类病,只是这次是"位置"充当了身份。**
     bad_cases = [
-        ("口径版本不在清单里", "INSERT INTO meta VALUES ('2099Q1',1,1,6,30,'9+99')"),
-        ("口径版本与指标数不自洽", "INSERT INTO meta VALUES ('2099Q1',1,1,7,28,'6+30')"),
-        ("期次不存在(外键)", "INSERT INTO 综合得分 VALUES ('2099Q1','某机场',4.0)"),
-        ("得分是负数", "INSERT INTO 综合得分 VALUES ('2025Q4','某机场',-1)"),
-        ("同一(期次,机场)重复", "INSERT INTO 综合得分 VALUES ('2025Q4','上海浦东国际机场',4.0)"),
+        ("口径版本不在清单里",
+         "INSERT INTO meta(期次,样本量,机场数,一级指标数,二级指标数,口径版本) "
+         "VALUES ('2099Q1',1,1,6,30,'9+99')"),
+        ("口径版本与指标数不自洽",
+         "INSERT INTO meta(期次,样本量,机场数,一级指标数,二级指标数,口径版本) "
+         "VALUES ('2099Q1',1,1,7,28,'6+30')"),
+        ("期次不存在(外键)",
+         "INSERT INTO 综合得分(期次,机场,得分) VALUES ('2099Q1','某机场',4.0)"),
+        ("得分是负数",
+         "INSERT INTO 综合得分(期次,机场,得分) VALUES ('2025Q4','某机场',-1)"),
+        ("同一(期次,机场)重复",
+         "INSERT INTO 综合得分(期次,机场,得分) "
+         "VALUES ('2025Q4','上海浦东国际机场',4.0)"),
     ]
     for label, sql in bad_cases:
         try:

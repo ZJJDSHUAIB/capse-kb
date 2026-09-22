@@ -29,11 +29,11 @@ r"""
 """
 import sys, io, re, json, sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
-SRC = Path(r"D:\capse-kb\docs\_挑战集.json")
+SRC = DOCS / "_挑战集.json"
 SPOKEN = ("拒答", "检索·0条")
 
 

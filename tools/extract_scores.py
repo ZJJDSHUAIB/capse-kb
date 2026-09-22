@@ -36,8 +36,8 @@ r"""
 """
 import sys, io, os, re, glob
 import fitz
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DATA = r"D:\capse-kb\data"
 
 # ---- 正则 ----
 SCORE   = re.compile(r'\d+\.\d+')                                    # 通用,不要求独占一行

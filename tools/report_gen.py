@@ -24,10 +24,10 @@ r"""
 """
 import sys, io, re, json, sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
 
 
 def collect_numbers(data, acc=None):
@@ -66,7 +66,12 @@ NUM = re.compile(r'\d+(?:\.\d+)?')
 #   实测踩过:`**1. 综合得分处于同档中上游**` ——
 #   第一版写的是 `\*\*?\d+[.、]\*\*?`,要求数字后紧跟 `**`,而实际是紧跟【空格】→ 没剔掉。
 # 编号后面可以是 . 、 : ： —— 实测踩过「**建议 1:」
-ORD = re.compile(r'\*\*?\d+[.、:：]\s|^\s*\d+[.、:：]\s|第\s*\d+\s*[名位条项个]', re.M)
+ORD = re.compile(r'\*\*?\d+[.、:：]\s|^\s*\d+[.、:：]\s|第\s*\d+\s*[名位条项个]'
+                 #  ⚠ 2026-09-22 补:「前 N 名」也是序数,不是数。
+                 #    实测踩到:答案里"综合得分前 5 名是哪些机场"——
+                 #    那个 5 被当成"数据里没有的数"报了假警报。
+                 #    ★ 而真实答案里"前 N 名"很常见(排名类题都这么说)。
+                 r'|前\s*\d+\s*[名位条项个]', re.M)
 
 
 def audit(report, data):
@@ -84,10 +89,20 @@ def audit(report, data):
     allowed = collect_numbers(data)
     bad = set()
     for m in NUM.finditer(body):
-        x = float(m.group(0))
-        if round(x, 2) in allowed or int(x) in allowed:
+        raw = m.group(0)
+        x = float(raw)
+        if round(x, 2) in allowed:
             continue
-        bad.add(m.group(0))
+        #  ⚠⚠ `int(x) in allowed` 这一条【原来是无条件的】—— 它有个洞,实测踩到:
+        #       答案写"得分 4.99",而 4.99 不在数据里 —— 【没报】。
+        #       因为 int(4.99) = 4,而 4 恰好在 allowed 里
+        #       (它是从 "2025Q4-P19" 这种串里被切出来的页码)。
+        #     ★ 所以:任何"整数部分在数据里出现过"的小数,都会蒙混过关。
+        #     ★★ 它本意是处理"数据写 4、答案写 4.0"这种整数写法差异 ——
+        #        那就【只在该数本来就是整数时】才用它。
+        if "." not in raw and int(x) in allowed:
+            continue
+        bad.add(raw)
     return bad
 
 

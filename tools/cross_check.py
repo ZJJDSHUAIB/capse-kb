@@ -28,8 +28,8 @@ r"""
 """
 import sys, io, json, re, csv
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-PROCESSED = Path(r"D:\capse-kb\data\processed")
 BLANK = re.compile(r'\s+')
 
 # 两种语序都收 —— 报告里 "6项一级指标" 和 "一级指标6项" 都出现过

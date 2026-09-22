@@ -33,8 +33,8 @@ from llm import chat, LLMError
 from route import (load_airports, load_indicators, find_periods,
                    find_airport, find_indicator, route)
 import sqlite3
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
 
 INTENT_SYS = """你在给一个民航满意度知识库做路由。
 

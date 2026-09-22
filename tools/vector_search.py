@@ -39,8 +39,8 @@ import sys, io, json, sqlite3
 from pathlib import Path
 
 import numpy as np
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-PROCESSED = Path(r"D:\capse-kb\data\processed")
 DB = PROCESSED / "capse.db"
 VEC_FILE = PROCESSED / "capse_vectors.npz"      # ② 存放数字的地方 —— 就是一个文件
 MODEL = "BAAI/bge-small-zh-v1.5"

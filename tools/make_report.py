@@ -27,11 +27,11 @@ r"""
 """
 import sys, io, json, sqlite3, datetime
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
-OUT_DIR = Path(r"D:\capse-kb\docs\报告")
+OUT_DIR = DOCS / "报告"
 AIRPORT = "上海浦东国际机场"
 PERIOD = "2025Q4"
 

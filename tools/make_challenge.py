@@ -35,11 +35,11 @@ r"""
 """
 import sys, io, re, json, random, sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
-OUT = Path(r"D:\capse-kb\docs\挑战集.xlsx")
+OUT = DOCS / "挑战集.xlsx"
 SEED = 20260918          # 固定种子 —— 可复现,而且我事先不知道抽到哪些
 
 # ── 从一页文本里抽"限定词"候选 ─────────────────────────
@@ -189,7 +189,7 @@ def main():
 
     allrows = A + B + C
     print(f"  A {len(A)} 道 / B {len(B)} 道 / C {len(C)} 道  合计 {len(allrows)}")
-    Path(r"D:\capse-kb\docs\_挑战集.json").write_text(
+    DOCS / "_挑战集.json".write_text(
         json.dumps(allrows, ensure_ascii=False, indent=1), encoding="utf-8")
     for r in allrows:
         print(f"  [{r['类别']}] {r['问题']}")

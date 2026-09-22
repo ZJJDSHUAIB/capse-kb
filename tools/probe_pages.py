@@ -8,10 +8,10 @@
 用法:  python D:/capse-kb/tools/probe_pages.py
 """
 import sys, io, glob, os, re, fitz
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-DATA = r"D:\capse-kb\data"
 
 files = sorted(glob.glob(os.path.join(DATA, "CAPSE*.pdf")))
 print(f"共 {len(files)} 份报告\n")

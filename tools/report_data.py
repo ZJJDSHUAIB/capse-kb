@@ -33,8 +33,8 @@ r"""
 """
 import sys, io, sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
 PERIOD = "2025Q4"
 AIRPORT = "上海浦东国际机场"
 

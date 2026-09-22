@@ -42,8 +42,8 @@ r"""
 import sys, io, csv
 from pathlib import Path
 import numpy as np
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-PROCESSED = Path(r"D:\capse-kb\data\processed")
 INDICATORS = ['机场交通', '机场服务与设施', '机场商贸', '机场安检',
               '出港服务', '进港服务', '航班不正常保障']
 PERIOD = "2025Q4"

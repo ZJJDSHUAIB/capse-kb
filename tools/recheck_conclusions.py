@@ -27,11 +27,11 @@ r"""
 import sys, io, re, json, sqlite3
 from collections import Counter
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
-OUT = Path(r"D:\capse-kb\docs\评估集_跑分.json")
+OUT = DOCS / "评估集_跑分.json"
 
 #  台账里记过的值(原样抄,不改)
 RECORDED = {

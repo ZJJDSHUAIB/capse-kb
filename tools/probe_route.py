@@ -26,8 +26,9 @@ except Exception:
 from route import (load_airports, load_indicators, route, DB,   # noqa: E402
                    NUMERIC, PROSE, find_indicator)
 from check_eval import read_rows                              # noqa: E402
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-SHEET = Path(r"D:\capse-kb\docs\评估集.xlsx")
+SHEET = DOCS / "评估集.xlsx"
 ROUTES = ["SQL", "检索", "拒答"]
 
 

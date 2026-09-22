@@ -53,8 +53,8 @@ r"""
 """
 import sys, io, re, json, sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-PROCESSED = Path(r"D:\capse-kb\data\processed")
 DB        = PROCESSED / "capse.db"
 CHUNKS    = PROCESSED / "capse_chunks.jsonl"
 
@@ -104,8 +104,30 @@ def build():
                          c["字符数"], c["页类型"], c["文本"]))
     con.executemany("INSERT INTO chunk VALUES (?,?,?,?,?,?)", rows)
 
-    # 外部内容索引必须显式 rebuild,否则索引是空的
-    con.execute("INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild')")
+    # ══ ★★★ 2026-09-22 改:索引【只建叙述页】 ═══════════════════
+    #
+    #  原来是 `INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild')` —— 全表建。
+    #
+    #  【为什么改】库里现在多了 29 块数据页(为了让出处能核,见 build_chunks.py)。
+    #    ★ 而它们一进索引,就把检索的池子搅了:
+    #        题48:2025Q4-P06(一页机场名单)挤掉了 2025Q4-P21(答案页)
+    #        题39:一堆 P12(测评背景及要点)挤掉了 P07(报告概况)
+    #      ★★ 端到端从 60/60 掉到 58/60 —— 而那不是"库变了的必然代价"。
+    #    ★★★ 而那正是当年不收数据页的第二条理由:
+    #        "向量检索分不出「上海浦东」和「深圳宝安」" ——
+    #        只是当年没真的踩到,今天踩到了。
+    #
+    #  【怎么分】把两个身份分开,而不是混在一起:
+    #      chunk 表   = 出处要指向的那一块        → 数据页【进】
+    #      chunk_fts  = 检索的入口                → 数据页【不进】
+    #    ★ 出处能核 ✅,检索不受干扰 ✅。
+    #
+    #  ⚠ 为什么不用 'rebuild' 而是手动 INSERT:
+    #    rebuild 会【从 content 表全表重建】,做不到"只索引一部分"。
+    #    而 external content 模式【允许手动插 rowid】—— 那就够了。
+    con.execute("""INSERT INTO chunk_fts(rowid, 文本)
+                   SELECT rowid, 文本 FROM chunk
+                   WHERE 页类型 NOT LIKE '数据页%'""")
     con.commit()
     return con, source, rows
 
@@ -281,14 +303,27 @@ def search_merged(con, query, k=DEFAULT_K, periods=None):
 def check(con, source, chunks):
     """① 数量一致  ② 索引没漂移  ③ 已知答案检索"""
     n_chunk = con.execute("SELECT COUNT(*) FROM chunk").fetchone()[0]
-    n_fts   = con.execute("SELECT COUNT(*) FROM chunk_fts").fetchone()[0]
-    if n_chunk != len(chunks) or n_fts != len(chunks):
-        raise ValueError(f"数量对不上: 真相源 {n_chunk}, 索引 {n_fts}, 源文件 {len(chunks)}")
-    print(f"  ① 真相源 {n_chunk} 块,索引 {n_fts} 块  ✅")
+    #  ⚠⚠ 别用 `SELECT COUNT(*) FROM chunk_fts` —— 它【量不出"只索引了一部分"】。
+    #     实测踩过(2026-09-22):external content 模式下,那个 COUNT(*) 会去
+    #     【content 表】数,而不是数索引 —— 所以它永远等于 chunk 表行数(83),
+    #     哪怕索引里其实只有 54 条。
+    #     ★ 而它让自检【报了个假错】:"实际索引 83",害我回头查了半小时。
+    #  ★★ 正确量法:查 fts 自己的 %_docsize 表 —— 那里才是【真被索引的文档】。
+    n_fts   = con.execute("SELECT COUNT(*) FROM chunk_fts_docsize").fetchone()[0]
+    #  ★ 索引【只该含叙述页】—— 见 build() 里那段注释。
+    #    所以自检要比的是"叙述页数",不是"全表数"。
+    n_idx = con.execute(
+        "SELECT COUNT(*) FROM chunk WHERE 页类型 NOT LIKE '数据页%'").fetchone()[0]
+    if n_chunk != len(chunks) or n_fts != n_idx:
+        raise ValueError(f"数量对不上: 真相源 {n_chunk}, 该进索引 {n_idx}, "
+                         f"实际索引 {n_fts}, 源文件 {len(chunks)}")
+    print(f"  ① 真相源 {n_chunk} 块(其中 {n_idx} 块叙述页进索引),索引 {n_fts} 块  ✅")
 
-    # ② 索引漂移检查:逐块比对索引查到的文本 vs 真相源里的文本
+    # ② 索引漂移检查:【只对进索引的那些】逐块比对
+    #    ★ 数据页不在索引里,拿它们去查一定查不到 —— 那不是漂移。
     drift = []
-    for cid, text in con.execute("SELECT c.chunk_id, c.文本 FROM chunk c"):
+    for cid, text in con.execute(
+            "SELECT c.chunk_id, c.文本 FROM chunk c WHERE c.页类型 NOT LIKE '数据页%'"):
         got = con.execute("""SELECT c.文本 FROM chunk_fts JOIN chunk c
                              ON c.rowid = chunk_fts.rowid
                              WHERE chunk_fts MATCH ? AND c.chunk_id = ?""",

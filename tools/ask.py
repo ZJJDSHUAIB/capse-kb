@@ -48,8 +48,8 @@ from route import (load_airports, load_indicators, find_periods, find_airport,
 from build_search import search, searchable, search_multi, search_merged
 from route_llm import judge_intent, rewrite_query, rewrite_query_alt
 from llm import LLMError
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
 
 # ══════════════════════════════════════════════════════════
 #  ★ 第 9 课第二节:关键词 → 关键词+向量 的 A/B 开关
@@ -106,6 +106,13 @@ GEN_SYS = """你是民航数据助手。你只能依据【给定的材料】回�
       而有了出处,系统自己也能被核对 —— 这是把"信不信"变成"查不查"。
    ★★★ 如果一句话是综合了多条材料的,就把编号都写上:(出处:2025Q4-P18 / 2025Q4-P19)。
    ⚠ 材料里没有答案、你只能说"材料里没有"时,【不要编出处】,直接说没有。
+8. ★★★ 如果材料前面给了【多版本提醒】(同一页在不同期次写法不同),
+   那么引用那些页时【必须说清是哪一期的哪一版】。
+   ★ 最要紧的是:【不许把两版的数字混着说】——
+     比如一版写"一级指标7项、二级指标28项",另一版写"6项、30项",
+     你写出"7项、30项"就是错的,即使这两个数【都在材料里出现过】。
+   ★★ 为什么单独列这一条:上面第 3 条("数字原样照抄")挡不住它 ——
+      因为那个数【确实】是照抄来的,只是抄错了版本。
 
 ⚠ 第 4 条是补的。第一版我写的是"一句话能说清就一句话",
   结果题 46/47 答成了"北京大兴国际机场、深圳宝安国际机场" ——
@@ -115,23 +122,43 @@ GEN_SYS = """你是民航数据助手。你只能依据【给定的材料】回�
 GEN_USER = """材料(共 {n} 条,每条前面是它的出处):
 
 {材料}
-
+{版本提醒}
 用户的问题:{q}
 
 直接给出回答。"""
 
 
-def gen_answer(q, hits, max_tokens=300):
+def gen_answer(q, hits, max_tokens=300, notes=None):
     """把取回的材料变成一句回答。★ 这是全流程里【唯一】让大模型作答的地方。
 
     ⚠ 它只能减轻"搬运",不能保证"答对" ——
       所以下面必须再走一道 audit_answer(),否则它编了什么没人知道。
+
+    ═══ ★★★ 2026-09-22 加 notes 参数(重要的一个修正)═══
+        实测查出来的机制(不是猜的):
+
+            第 39 题的材料是 9 页,其中【3 段长得几乎一样、只有数字不同】——
+            它们是同一页(第 7 页)在三个时期的版本。
+
+        ★ 而在这之前,模型【不知道】那三段是同一页的版本。
+          因为版本信息在多版本说明(page_notes)里,
+          而 page_notes 是在【答案拼装完之后】才贴到结果上的 —— 模型看不到。
+        ★★ 于是它随手从不同版本里各取一个数,配成一句话:
+              「一级指标7项、二级指标30项」← 没有哪一期是这么写的
+           而这句错话,三条硬判据【全报空】(每个数都在库里出现过)。
+        ★★★ 所以修法不是"再加一道判据",是【把已经算好的信息递给它】——
+           能算的地方别问大模型;而【已经算出来的东西,别让它看不见】。
     """
     from llm import chat
     材料 = "\n\n".join(
         f"【{i+1}】{h['chunk_id']}({h['期次']} 第 {h['页码']} 页)\n{h['文本']}"
         for i, h in enumerate(hits))
-    return chat(GEN_USER.format(n=len(hits), 材料=材料, q=q),
+    版本提醒 = ""
+    if notes:
+        版本提醒 = ("\n★ 这几页有【多个版本】—— 同一页在不同期次写的数字不一样。"
+                    "引用时必须说清是【哪一期的那一版】,不许把两版的数混着说:\n"
+                    + "\n".join(notes) + "\n")
+    return chat(GEN_USER.format(n=len(hits), 材料=材料, q=q, 版本提醒=版本提醒),
                 system=GEN_SYS, max_tokens=max_tokens).strip()
 
 
@@ -337,6 +364,19 @@ SEARCH_K = 5               # 检索取几条 —— 和 answer_search 的默认�
 #      ★ 所以:架子留着(能容纳两种),但【只有一种被验证有效】。
 RETRY_PLAN = {
     "分档排名漏了":     ("算出补上", "一次到位"),
+
+    #  ★★★ 2026-09-22 扩:"编"那三类的动作 —— 都是【再生成一次】。
+    #
+    #     【为什么那可能有用】生成是【抽样的】:第 11 课量过,
+    #       同一件事跑两次结果会不一样(题45 那次 20%、题47 那次 4/10 和 6/10)。
+    #       所以"编了"再生成一次,可能就不编了。
+    #     ★★ 而"有没有好"由【硬判据】说,不是它自己说 ——
+    #        那就不是"自己给自己盖章"(那是这个项目一路反对的)。
+    #     ★★★ 而它是【赌】:可能三次都还编。那说明这个动作对这三类没用 ——
+    #        而那也是个结果,要如实报出来。
+    "编了数字":     ("重新生成", "再来一轮"),
+    "编了出处":     ("重新生成", "再来一轮"),
+    "编了机场名":   ("重新生成", "再来一轮"),
     #  ⚠⚠ "说没有而材料里有" —— 【诊断留着,动作删了】。
     #
     #  为什么删(2026-09-22 实测):
@@ -359,27 +399,80 @@ RETRY_PLAN = {
 }
 
 
-def diagnose(a, q, kw, hits):
-    """这一轮【失败在哪一类】?返回类型名,或 None(没失败)。
+def _brief(xs, n=2):
+    """把判据报出来的东西压成一小段 —— trace 里只放得下这么点。
+
+    ★ 为什么只留 2 个:那一行是给【跑分文件的过程栏】看的,
+      太长会把「第几轮」「哪一类」这些真正要紧的字淹掉。
+    ★★ 而假警报的教训在这儿:警报多了没人看 —— 记录也一样,长了没人看。
+    """
+    xs = [str(x) for x in (xs or [])]
+    if not xs:
+        return ""
+    if len(xs) <= n:
+        return "、".join(xs)
+    return "、".join(xs[:n]) + f"…(共 {len(xs)} 个)"
+
+
+def diagnose(a, q, kw, hits, airports=None):
+    """这一轮【失败在哪一类】?返回 (类型名, 具体是什么),没失败就是 (None, "")。
 
     ★ 它只做【诊断】,不做动作 —— 诊断和动作分开,
       是因为同一类失败在不同情况下该有不同对策,而诊断的判据不变。
 
-    ★★ 查的顺序有讲究:先查"说没有"——
-       ★ 因为如果它答了"材料里没有",那"漏了并列"也必然成立(什么都没答),
-         而那时该按【更根本】的那一类处理。
+    ★★ 查的顺序有讲究:
+       ① 先查"说没有"—— 如果它答了"材料里没有",那"漏了并列"也必然成立
+          (什么都没答),那时该按【更根本】的那一类处理。
+       ② 再查"漏了/编了" —— 那几类【互斥性不强】,
+          但这个顺序让"漏"优先于"编"(漏更常见,而且动作更强)。
 
     ⚠ 它只跑【硬判据】那几道,不叫大模型 —— 见上面那两条业界结论:
       反馈信号锚在真值校验上,比模型自己的判断强得多。
+
+    ═══ ★★★ 2026-09-22 扩:从 2 类扩到 5 类 ═══
+        原来只认"说没有"和"漏了并列"两种 —— 而【能算的失败类型】还有三种:
+
+            编了数字      audit_answer    能判
+            编了出处      check_citations 能判
+            编了机场名    check_entities  能判
+
+        ★ 那三类的判据【早就写好了】,只是没给它们配动作 ——
+          于是循环碰到它们的时候只会"停",不知道该做什么。
+        ★★ 而"自主规划"最朴素的样子不是让它自己想,
+           是【它能自己处理更多情况】。所以:把覆盖面接上。
+
+    ═══ ★★★ 2026-09-22 加"具体是什么" ═══
+        原来只返回类型名,于是 trace 里长这样:
+
+            第1轮:材料5页 → ★ 编了机场名
+
+        ★ 而【编的是哪一个机场】没记下来 —— 于是事后【分不清它是真编还是判据误报】。
+        ★★ 实测踩到:第42题问的是"一级指标有哪些",和机场名毫无关系,
+           却报了「编了机场名」。而那一轮的原文没留下 → **永远查不清**。
+        ★★★ 一行改动,把每一次 trace 从"一条线索"变成"一份证据"。
     """
-    if check_missed(a, kw, hits):
-        return "说没有而材料里有"
-    if check_ranked_answer(a, q, hits):
-        return "分档排名漏了"
-    return None
+    m = check_missed(a, kw, hits)
+    if m:
+        return "说没有而材料里有", _brief(m)
+    r = check_ranked_answer(a, q, hits)
+    if r:
+        return "分档排名漏了", _brief(r)
+    #  下面三类是"编" —— 判据都是硬的。
+    #  ⚠ airports 是可选的:不传就跳过机场名那一条(旧调用方还用不着它)。
+    bad = audit_answer(a, hits)
+    if bad:
+        return "编了数字", _brief(sorted(bad))
+    gc = check_citations(a, hits)
+    if gc:
+        return "编了出处", _brief(sorted(gc))
+    if airports:
+        ge = check_entities(a, hits, airports)
+        if ge:
+            return "编了机场名", _brief(ge)
+    return None, ""
 
 
-def gen_with_retry(q, kw, hits):
+def gen_with_retry(q, kw, hits, airports=None, notes=None):
     """生成 → 诊断 → 做对应的动作 → 再看结果。★ 第 12 课。
 
     ★ 和"盲目重试"的区别:每一轮都先看【是哪类失败】,再做【对应的】动作。
@@ -393,10 +486,11 @@ def gen_with_retry(q, kw, hits):
     trace = []
     a = ""
     for attempt in range(1, MAX_RETRY + 1):
-        a = gen_answer(q, h)
-        kind = diagnose(a, q, kw, h)
+        a = gen_answer(q, h, notes=notes)
+        kind, why = diagnose(a, q, kw, h, airports)
+        #  ★ why 是"编的是哪一个"—— 有它,trace 才是一份证据而不是一条线索。
         trace.append(f"第{attempt}轮:材料{len(h)}页 → " +
-                     (f"★ {kind}" if kind else "通过"))
+                     (f"★ {kind}「{why}」" if kind else "通过"))
         if kind is None:
             break
         plan = RETRY_PLAN.get(kind)
@@ -411,6 +505,13 @@ def gen_with_retry(q, kw, hits):
             a = supplement_ranked(a, q, h)
             trace.append("  └ 已【算出来补上】(不重试 —— 能算的别问大模型)")
             break
+        if action == "重新生成":
+            #  ★★ 什么都不做 —— 让循环继续,下一轮重新 gen_answer。
+            #     而"有没有好"由硬判据在【下一轮的 diagnose】里说,
+            #     不是它自己说 —— 那就不是"自己给自己盖章"。
+            #  ⚠ 它有上限(MAX_RETRY):三次都还编,就带着【最后那一版】出去。
+            trace.append("  └ 【重新生成】(赌一次 —— 生成是抽样的)")
+            continue
         break
     return a, trace
     #  ⚠ 这一行被我删过一次(2026-09-22):删分支的时候,把函数末尾的 return
@@ -438,15 +539,32 @@ def check_entities(ans, hits, airports):
 
     ⚠ 它抓不到"张冠李戴":把 A 机场的分数说成 B 机场的 ——
       两个名字都在材料里,所以这条判据看不见。
+
+    ═══ ⚠⚠ 第一版有个【反直觉的洞】,实测踩到(2026-09-22)═══
+        第一版的判据是:"拿【库里已知的机场名单】去核回答"。
+        ★ 而它正好漏掉最危险的那种编:
+
+            模型编了"桂林两江国际机场"(库里没有这个机场)
+            → 核对名单里没有它 → 【永远抓不到】→ 报 []
+
+        ★★ 也就是说:编一个【真实存在的机场】能抓到,
+            编一个【根本不存在的】反而抓不到。
+        ★★★ 又是"量具只覆盖它覆盖的地方" —— 而这次覆盖不到的那块,恰好最该抓。
+
+    ═══ 现在改用的判据 ═══
+        找回答里【形如"XX机场"的片段】,不管它在不在库里 —— 只问"在不在材料里"。
+        ★ 那个正则项目里早就有了(AIRPORT_LIKE,unknown_airport 也在用)。
+        ★★ 泛指要滤掉:"哪些机场""这个机场"那种不是具体名字。
     """
-    all_names = sorted(set(airports.values()), key=len, reverse=True)
     材料 = "".join(h["文本"] for h in hits)
-    #  ★ 长的先匹配 —— 免得到时候"合肥新桥国际机场"被短的"合肥"抢掉
-    在回答里 = [n for n in all_names if n in ans]
-    #  ★ 同一个机场可能被长短两个名字同时命中,去重:短的若被长的包含,就不算
-    real = [n for n in 在回答里
-            if not any(n != m and n in m for m in 在回答里)]
-    return [n for n in real if n not in 材料]
+    out = []
+    for m in AIRPORT_LIKE.finditer(ans or ""):
+        w = m.group(0)
+        if is_generic_airport(w):
+            continue                      # 泛指,不是点名
+        if w not in 材料:
+            out.append(w)
+    return out
 
 
 def check_missed(ans, kw, hits):
@@ -624,8 +742,47 @@ def known_names(con, indicators):
 META_Q = re.compile(r'进库|入库|切片|没进|未入库|不在库里|收录|没收录')
 AIRPORT_LIKE = re.compile(r'([\u4e00-\u9fff]{2,6})机场')
 #  泛指,不是具体机场名 —— 这些不该被当成"认不出的机场"
-GENERIC_AIR = ('哪些机场', '几家机场', '所有机场', '全部机场', '各个机场', '多少机场',
-               '哪些家的机场')
+#  ⚠⚠ 2026-09-22:原来这里是一张【枚举表】,而枚举永远漏 ——
+#     实测:答案里"这些机场综合得分前 5 名"的「这些机场」不在表里
+#     → check_entities 把它当成"材料里没有的机场名"报了假警报。
+#  ★ 改成【按特征认】,分头尾两类:
+#       头:这/那/该/各/某/每/全/所(指示代词或量词开头 —— 真机场名不会这么开头)
+#       尾:含疑问词
+#  ★★ 而底下 unknown_airport 里抄了同一套判断 —— 现在【合成一个函数】。
+#     那正是这个项目一路在治的病:"同一个判断写两遍,迟早不一致"。
+GENERIC_AIR_HEAD = re.compile(r'^(?:这|那|该|各|某|每|全|所|几|多)')
+GENERIC_AIR_ASK  = re.compile(r'哪些|什么|多少|几个|哪家|哪几|几家')
+
+#  ⚠⚠ 第三条判据(2026-09-22 加):前缀里出现【虚词】的,不是地名,所以不是机场名。
+#
+#     实测踩到的假警报:
+#         答案是「…一级指标6项,分别为机场交通、机场服务与设施、…」
+#         而正则 ([一-鿿]{2,6})机场 从「分别为机场交通」里【切出了「分别为机场」】,
+#         报成"编了一个材料里没有的机场"。
+#         ★ 而「机场」在这里是【列表项的开头】,不是名字的结尾 —— 正则分不出来。
+#         ★★ 实测代价:第42题三轮都被它拦住,白重试 3 次(用 rounds 数出来的)。
+#
+#     判据:**中国的机场名以地名开头,而地名不会以虚词结尾。**
+#         分别为 → 含「为」 → 不是地名 → 跳过 ✅
+#         桂林两江 → 无虚词 → 是地名 → 留着 ✅
+#
+#     ★★★ 而这条是【验过的】,不是拍的:
+#         拿库里全部 43 个机场名逐个过,【零误伤】。
+#         (第一版把「和」也放进去了 → 呼和浩特白塔国际机场被误伤 → 拿掉「和」。
+#          所以这份字表里【没有「和」】—— 那个字在地名里太常见,当不了判据。)
+#     ⚠ 它是【代理判据】,不完美:一个真叫"某某为"的地名会被它跳掉。
+#       写在这里,是因为"跳过一个没人这么起名的"比"天天误报"划算得多。
+GENERIC_AIR_FUNC = set('的了与及或为是在有从对把被而且也就还很更最等各该这那其之所以于由因但只又将总并则')
+
+
+def is_generic_airport(w):
+    """这个"XX机场"是【泛指】,还是在【点名一个具体机场】?
+
+    ★ 泛指不该被当成"认不出的机场名",更不该被当成"编出来的机场名" ——
+      否则满屏假警报,而【假警报多了,真警报就没人看了】。
+    """
+    return bool(GENERIC_AIR_HEAD.match(w) or GENERIC_AIR_ASK.search(w)
+                or (set(w[:-2]) & GENERIC_AIR_FUNC))
 
 
 # ══════════════════════════════════════════════════════════
@@ -725,6 +882,46 @@ def unknown_metric(q, known):
     return None
 
 
+#  ★ 档位词:"4000万级" / "2500万-4000万级" / "1500万级以上"
+TIER_Q = re.compile(r"(\d{4}万(?:-\d{4}万)?级(?:以上)?)")
+
+
+def find_tier(q, tiers):
+    """问句里的【档位词】,对应库里的哪一档?返回标准档位名,或 None。
+
+    ═══ 为什么需要它(2026-09-22,挑战集逼出来的)═══
+        挑战集里有四道【同一类】的问题:
+
+            2025Q4里,4000万级以上是多少    → 路由判【SQL】→ ★ 拒答
+            2025Q4里,2500万级是多少       → 路由判【SQL】→ ★ 拒答
+            2025Q4里,4000万级是多少       → 路由判【SQL】→ ★ 拒答
+            2025Q4的1500万级说的是什么     → 路由判【判不出】→ 走检索 → ✅ 答对
+
+        ★ 同一类问题,只因为问法差一个字,走了两条路 ——
+          而一条路认它、另一条不认。
+        ★★ 而这正是这个项目的老毛病:「同一条规则只装在一条路上」。
+
+    ═══ 判据:标准档位里,【以这个档位词结尾】的那个 ═══
+        "1000万-1500万级".endswith("1500万级") → ✅
+        "1500万-2500万级".endswith("2500万级") → ✅
+        "2500万-4000万级".endswith("4000万级") → ✅
+        "4000万级以上"   ==     "4000万级以上"  → ✅
+
+    ★★ 为什么用"结尾"而不是"包含":挑战集用的是简称 ——
+       "1500万级" 其实是 "1000万-1500万级",简称取的是后半截。
+
+    ★★★ 而【必须唯一】才算认出来 —— 我逐个验过这四条,都唯一。
+        如果哪天出现一个词对上两档,那就不猜(返回 None)。
+        **宁可说认不出,不可猜一个。**
+    """
+    m = TIER_Q.search(q or "")
+    if not m:
+        return None
+    w = m.group(1)
+    hit = [t for t in tiers if t == w or t.endswith(w)]
+    return hit[0] if len(hit) == 1 else None
+
+
 def unknown_airport(q, airports_in_q, airports=None):
     """问句里有没有【像机场名、但一个都没认出来】的?
 
@@ -736,13 +933,10 @@ def unknown_airport(q, airports_in_q, airports=None):
         return None                       # 认到了,这一层的问题就不存在
     for m in AIRPORT_LIKE.finditer(q):
         w = m.group(0)
-        if w in GENERIC_AIR:
-            continue
-        # ★ 含疑问词的片段不是具体机场名(实测踩的坑):
+        # ★ 泛指判断【和 check_entities 共用一个函数】—— 理由见那边的注释。
         #    「综合得分前 5 名是哪些机场」→ 正则贪婪,把「名是哪些机场」整个吃了
         #    → 报「『名是哪些机场』不在库里」,而那题系统答得出来。**误拒。**
-        #    「哪些/什么/多少/几个」这类词一出现,就说明它在泛指,不是在点名。
-        if re.search(r'哪些|什么|多少|几个|哪家|哪几', w):
+        if is_generic_airport(w):
             continue
         # ★★ 最要紧的一道(实测踩过一次,误拒了 4 道正式题):
         #    「国际及港澳台地区机场」「4000万级以上机场」也会被抽出来,
@@ -941,6 +1135,59 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
                 lines.append(f"{p} 前 {k} 名:" + ";".join(f"第{r}名 {a} {s}" for r, a, s in rows))
                 src.append(f"capse.db / 综合得分排名 视图,期次={p}(视图,不存数据)")
 
+    elif (_tier := find_tier(q, [r[0] for r in con.execute(
+            "SELECT DISTINCT 档位 FROM 机场分档 WHERE 档位 IS NOT NULL")])):
+        # ══ ★★★ 问「某档位是多少」(2026-09-22,挑战集逼出来的)═══════
+        #
+        #  【病根】挑战集里四道【同一类】问题,因为问法差一个字走了两条路:
+        #      2025Q4里,4000万级以上是多少  → 路由判【SQL】→ 不认它 → ★ 拒答
+        #      2025Q4的1500万级说的是什么    → 路由判【判不出】→ 走检索 → ✅ 答对
+        #  ★ 而 SQL 那五个分支认的是:样本量 / 指标名 / 机场 / 前N / 综合得分兜底 ——
+        #     【"档位词"不在其中】。
+        #  ★★ 又是那个老毛病:「同一条规则只装在一条路上」。
+        #
+        #  【判据】见 find_tier():标准档位里【以它结尾】且【唯一】的那个。
+        #
+        #  【数据来源】两张现成的表 JOIN 起来:
+        #      机场分档(机场→档位) + 综合得分(机场→得分)
+        #    ★ 实测过:2025Q4「4000万级以上」JOIN 出来 11 家,
+        #      顺序和 P18 原文那张表【完全一致】(4.28/4.27/4.25…)。
+        #
+        #  ⚠ 覆盖范围的限制,如实说:机场分档表【只有 2025Q4 一期】——
+        #    问别的期次答不了,那就明说,不猜。
+        for _p in ps:
+            _rows = con.execute(
+                "SELECT t.机场, s.得分, s.来源 FROM 机场分档 t "
+                "JOIN 综合得分 s ON s.机场 = t.机场 AND s.期次 = t.期次 "
+                "WHERE t.期次 = ? AND t.档位 = ? ORDER BY s.得分 DESC",
+                (_p, _tier)).fetchall()
+            if _rows:
+                lines.append(
+                    f"{_p} {_tier}(共 {len(_rows)} 家,按综合得分从高到低):"
+                    + ";".join(f"{a} {s}" for a, s, _ in _rows))
+                #  ★★ 来源要带页码 —— 项目那条"每个答案都带出处"。
+                #     而两张表【本来就有"来源"列】(第 8 课回填的),
+                #     我第一版只查了机场和得分、没查它 ——
+                #     于是用户拿到答案却【核不回原文哪一页】。
+                #  ★★★ 那正是挑战集照出来的:它拿"正确页在不在来源里"当判据,
+                #     而我的来源里只有表名,没有页码 → 判"没取到"。
+                #     系统其实答对了,是【出处没写全】。
+                #  ⚠⚠ 这个变量【不能叫 _pdf】—— 那是模块级函数的名字。
+                #    实测踩过(2026-09-22):函数里一旦出现 `_pdf = ...` 这种赋值,
+                #    Python 就把 `_pdf` 当成【整个函数的局部变量】,
+                #    于是前面那些 `_pdf(row[1])` 的调用全部报 UnboundLocalError
+                #    —— 60 道里 32 道崩,分数从 60/60 掉到 27/60。
+                #  ★★ 又是"同一个名字两个身份"。这个项目一路在治的就是这个。
+                _pdfs = "、".join(
+                    _pdf(s) for s in sorted({r[2] for r in _rows if r[2]}))
+                src.append(f"capse.db / 机场分档 + 综合得分 表,"
+                           f"期次={_p},档位={_tier}"
+                           + (f"  → PDF {_pdfs}" if _pdfs else ""))
+        if not lines:
+            raise CannotAnswer(
+                f"「{_tier}」这一档的分档数据【只有 2025Q4 一期】—— "
+                f"你问的期次没有。(问句:{q})")
+
     # ── 综合得分:单机场按机场查,无机场则取全期排名 ────
     #
     #  ★★ 这一格原来是个【排除法】:前面都不匹配 → 答综合得分。
@@ -1045,10 +1292,18 @@ def retrieve(con, kw, periods=None, k=5):
     #   **同一件事,对一类问题是答案,对另一类是噪声。**
     notes = []
     for pg in (sorted({h["页码"] for h in hits}) if not periods else []):
-        vs = versions(con, pg)
+        #  ★★ 页类型要一路传下去 —— 见 page_versions.versions() 的注释。
+        #     实测:2025Q4 那份 PDF 页结构不同,它的 P12 是【数据页】(分数表),
+        #     而别的期的 P12 是【叙述页】。不传页类型的话,
+        #     那张分数表会被当成"P12 的另一个版本"混进说明里 —— 题39 因此从满分掉到 0。
+        _hit = next((h for h in hits if h["页码"] == pg), None)
+        _t = con.execute("SELECT 页类型 FROM chunk WHERE chunk_id=?",
+                         (_hit["chunk_id"],)).fetchone() if _hit else None
+        _pt = _t[0] if _t else None
+        vs = versions(con, pg, _pt)
         if len(vs) <= 1:
             continue                      # 只有一版 → 不啰嗦
-        notes.append(describe(con, pg))
+        notes.append(describe(con, pg, _pt))
         have = {s.split(" ")[0] for s in src}
         for pers, _, _ in vs:             # ★ 每个版本的代表期进来源
             cid = f"{pers[0]}-P{pg:02d}"
@@ -1284,13 +1539,32 @@ def ask(con, q, airports, indicators):
             try:
                 if USE_RETRY:
                     #  ★ 第 12 课:走循环 —— 生成 → 诊断 → 做对应的动作
-                    a, _trace = gen_with_retry(q, kw, hits)
+                    #  ★★ airports 要传:diagnose 里有一条要核"编了机场名"
+                    #  ★★★ notes 也要传:那是【多版本说明】——
+                    #     不传的话模型看不见"这几段是同一页的三个版本",
+                    #     它会从不同版本里各取一个数配成一句(实测踩到过)。
+                    a, _trace = gen_with_retry(q, kw, hits, airports, page_notes)
                     out["备注"].extend(_trace)      # ★ 过程留着,不然看不出它试了什么
                 else:
-                    a = gen_answer(q, hits)
+                    a = gen_answer(q, hits, notes=page_notes)
                 bad = audit_answer(a, hits)
                 ghost_cite = check_citations(a, hits)
                 out["答案"] = list(page_notes) + [a]
+                #  ═══ ★★★ 2026-09-22:把【模型写的那一段】单独存一份 ═══
+                #  【为什么必须单独存 —— 这一节因为缺它栽了四次】
+                #      out["答案"] = 多版本说明 + [模型那句]。
+                #      而"多版本说明"是【代码算出来的】,里面本来就有页码、期数、
+                #      「第 7 页在 9 期里有 3 个版本」这种话 —— 全是数字。
+                #
+                #      ★ 于是我每次离线复检,拿【整段答案】去审,判据就会:
+                #          · 报出 4 个"编的数字" —— 其实全来自那段说明(题39)
+                #          · 判不出"模型整段没提那一页" —— 因为说明里有那些数字
+                #        **同一个坑踩了四次。**
+                #
+                #  ★★ 根因不是判据写得不好,是【信息没留下来】:
+                #      事后想从拼好的东西里反推"哪句是模型的",只能靠正则猜。
+                #  ★★★ 所以:在源头把它分开存。以后所有离线分析都该用 模型答。
+                out["模型答"] = a
                 if bad:
                     #  ★ 出声。这一层的价值有一半在这行 ——
                     #    没有它,生成层就变成一个"答得又干净又流畅、而没人知道是编的"东西。
@@ -1384,36 +1658,102 @@ QUESTIONS = [
 
 
 def main():
+    #  ═══ ★★★ 2026-09-22 加命令行开关 ═══
+    #  【为什么要加】写 README 的时候发现:上面那几个开关
+    #  (USE_MERGE / USE_GEN / USE_RETRY)只能【改源码】才能开。
+    #  ★ 后果:README 没法写出一条真的命令 —— 只能写"去把第 69 行改成 True",
+    #    而那对第一次拿到项目的人是一道没必要的墙。
+    #  ★★ 更糟的是,如果 README 写了 `--merge` 而这个脚本不认,
+    #     那条命令会【静静地被忽略】—— 用户以为开了,其实没开。
+    #     **那正是这个项目一路在打的东西。**
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="问几个问题,看看系统怎么答(默认全关 = 第 5 课以来的基线)")
+    ap.add_argument("--merge", action="store_true",
+                    help="开合并检索(关键词 + 向量)。★ 第一次跑会下载模型(约 100MB)")
+    ap.add_argument("--gen", action="store_true", help="开生成层(让大模型作答,不是拼材料)")
+    ap.add_argument("--retry", action="store_true", help="开重试循环(生成→诊断→动作)")
+    ap.add_argument("--ask", default="", metavar="问题",
+                    help="只问这一个问题,不跑下面那套演示")
+    args = ap.parse_args()
+    #  ★ 用 global 改模块级开关 —— ask() 读的就是它们。
+    global USE_MERGE, USE_GEN, USE_RETRY
+    if args.merge:
+        USE_MERGE = True
+    if args.gen:
+        USE_GEN = True
+    if args.retry:
+        USE_RETRY = True
+    if args.merge or args.gen or args.retry:
+        print(f"  开关:合并检索={'开' if USE_MERGE else '关'} "
+              f"生成层={'开' if USE_GEN else '关'} "
+              f"重试循环={'开' if USE_RETRY else '关'}\n")
+
     con = sqlite3.connect(DB)
     airports = load_airports(con)
     indicators = load_indicators(con)
+
+    if args.ask:
+        #  ★ 只问一个就走 —— 这是"别人拿到项目后第一件想做的事"
+        render(ask(con, args.ask, airports, indicators))
+        con.close()
+        return
 
     for q in QUESTIONS:
         render(ask(con, q, airports, indicators))
 
     # ── 把"来源够不够"单独拉出来看 ──────────────────
     print(f"\n\n{'═' * 74}")
-    print("═══ 本课第一个发现:两条路的【来源】完整程度不一样 ═══")
+    print("═══ 两条路的【来源】完整程度 ═══")
     n_src = n_nosrc = 0
+    sql_with_pdf = []          # ★ SQL 路的来源里,有没有带 PDF 页码
     for q in QUESTIONS:
         a = ask(con, q, airports, indicators)
         if a["去向"] in ("SQL", "检索"):
             if a["来源"]:
                 n_src += 1
+                if a["去向"] == "SQL":
+                    sql_with_pdf += [s for s in a["来源"] if "PDF" in str(s)]
             else:
                 n_nosrc += 1
                 print(f"  ★ 有答案但没有来源:{q}")
-    print(f"\n  有来源 {n_src} 题 / 无来源 {n_nosrc} 题")
-    print("""
-  SQL 这一路的来源只能写到【表名】:
-       capse.db / 综合得分 表,期次=2025Q4,机场=上海浦东国际机场
-  用户拿着它,回不到 PDF 的哪一页去核。
+    #  ⚠⚠ 2026-09-22:两个数分开看待,它们【不是一回事】:
+    #      无来源 N 题 —— ★ 这是【判据】,期望值是 0。有 >0 就是有答案缺来源,该报警。
+    #      有来源 N 题 —— ★★ 这只是【这次跑出来的计数】,不是结论。
+    #         实测:同一份代码跑两次,一次报 4 一次报 8 ——
+    #         因为这里面有大模型参与的路由,同一个问题两次可能走不同的路。
+    #      ★★★ 所以把"有来源"那个数【标明是这一次的】,别让它看起来像个定论。
+    #           一个每次都可能不一样却印得像结论的数,和那三处过期结论是同一个病。
+    print(f"\n  ★ 无来源 {n_nosrc} 题  ← 这个是判据,期望是 0")
+    print(f"    有来源 {n_src} 题  ← ⚠ 这只是【这一次跑】的数,不是结论"
+          f"(有大模型路由参与,两次跑可能不一样)")
 
-  检索这一路是完整的:
-       2025Q4-P19 = 2025Q4 第 19 页
-
-  → 这不是代码写错了,是【第 1 课入库时没记页码】。
-    张君杰那条"必须给来源"的规则,一句话就把这个缺口照出来了。""")
+    #  ═══ ★★★ 2026-09-22:这一段原来是【写死的文字】,现在改成【算出来的】 ═══
+    #
+    #  【为什么必须改 —— 张君杰跑这个脚本时撞上的】
+    #      原来这里印的是一段固定的结论:
+    #          "SQL 这一路的来源只能写到【表名】…回不到 PDF 的哪一页去核"
+    #      那是【第 7 课当时】的结论,当时是对的。
+    #
+    #      ★ 而第 13 课把数据页收进库之后,那个缺口修好了 ——
+    #        来源现在能到 "→ PDF 2025Q4 第9页"。而我【没回头改这段打印】。
+    #      ★★ 于是:每次跑这个脚本,它都会宣布一个【已经不成立】的结论。
+    #      ★★★ 最糟的是它和上面那行"有来源 N 题"印在一起,长得一模一样 ——
+    #           读的人分不出【哪句是量的、哪句是写的】。
+    #           **同一段输出,两个来源。这就是这个项目一路在打的病。**
+    #
+    #  → 所以改成算的:去看实际的来源里有没有 "PDF"。
+    #    能算的地方别写死 —— 在这段打印里也一样成立。
+    if sql_with_pdf:
+        print(f"\n  ★ SQL 这一路的来源【能回到 PDF 页码】—— 实测 {len(sql_with_pdf)} 条,例如:")
+        print(f"       {sql_with_pdf[0]}")
+        print("\n  检索这一路也是完整的:")
+        print("       2025Q4-P19 = 2025Q4 第 19 页")
+    else:
+        print("\n  ⚠ SQL 这一路的来源【回不到 PDF 页码】,只能到表名:")
+        print("       capse.db / 综合得分 表,期次=2025Q4,机场=上海浦东国际机场")
+        print("  用户拿着它,回不到 PDF 的哪一页去核。")
+        print("\n  → 这不是代码写错了,是【第 1 课入库时没记页码】。")
     con.close()
 
 

@@ -45,8 +45,8 @@ import fitz
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, str(Path(__file__).parent))
 from build_scores_table import get_pdf_files, get_period
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-PROCESSED = Path(r"D:\capse-kb\data\processed")
 SCORES_CSV = PROCESSED / "capse_scores.csv"
 OUT        = PROCESSED / "capse_meta.csv"
 

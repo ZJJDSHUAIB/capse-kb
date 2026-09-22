@@ -41,10 +41,10 @@ from ask import ask                                           # noqa: E402
 import ask as _ask_mod                                        # noqa: E402  ← 第9课:要改它的 USE_MERGE 开关
 from check_eval import (read_rows, answer_numbers, numbers_in,  # noqa: E402
                         explain_missing, EVAL_IN)
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT      # noqa: E402
 
-DB  = Path(r"D:\capse-kb\data\processed\capse.db")
 _CON = None   # 惰性打开的连接,给证据核对用
-OUT = Path(r"D:\capse-kb\docs\评估集_跑分.json")
+OUT = DOCS / "评估集_跑分.json"
 
 
 def _chunk_ids(text):
@@ -77,7 +77,7 @@ def _sub_items(ans):
 #   证据有没有命中是硬判的(上面 _chunk_ids 那段),那是这套评估里
 #   唯一不依赖第二个模型的地方。全交给大模型 = 让另一个 LLM 决定
 #   另一个 LLM 对不对 —— 它判松了,分数就虚高,而且【看不出来】。
-_JUDGE_CACHE = Path(r"D:\capse-kb\docs\评估集_判分缓存.json")
+_JUDGE_CACHE = DOCS / "评估集_判分缓存.json"
 _cache = json.loads(_JUDGE_CACHE.read_text(encoding="utf-8")) if _JUDGE_CACHE.exists() else {}
 
 # ── ★ 让缓存自己报数 ──────────────────────
@@ -514,10 +514,17 @@ def query_all(rows):
         try:
             o = ask(con, r["问题"], ap, ind)
             rec = {"去向": o.get("去向", "?"), "系统答": "\n".join(o.get("答案") or []),
+                   #  ★★★ 模型答 = 【只有模型写的那一段】,不含代码生成的多版本说明。
+                   #     为什么要单独存:见 ask.py 里那段注释 ——
+                   #     拿"系统答"去离线复检,判据会被说明里的数字糊住(踩了四次)。
+                   #     ⚠ 非生成路径(材料拼接)没有模型答,是 None —— 那是对的,
+                   #       那种情况下【一个字都不是模型写的】。
+                   "模型答": o.get("模型答"),
                    "来源": o.get("来源") or [], "警告": o.get("警告") or [],
                    "过程": o.get("备注") or []}
         except Exception as e:
-            rec = {"去向": "★崩了", "系统答": f"{type(e).__name__}: {e}", "来源": [], "警告": [], "过程": []}
+            rec = {"去向": "★崩了", "系统答": f"{type(e).__name__}: {e}", "模型答": None,
+                   "来源": [], "警告": [], "过程": []}
         out.append(rec)
     return out
 

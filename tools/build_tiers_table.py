@@ -32,9 +32,9 @@ r"""
 """
 import sys, io, re, csv, sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
-OUT = Path(r"D:\capse-kb\data\processed\capse_tiers.csv")
+OUT = PROCESSED / "capse_tiers.csv"
 PERIOD = "2025Q4"
 TIER_PAGES = ["2025Q4-P18", "2025Q4-P19", "2025Q4-P20", "2025Q4-P21"]
 

@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from parse_table import parse, GRADE, SCORE
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 GRADE_Q = re.compile(r"(\d{4}万(?:-\d{4}万)?级(?:以上)?)")
 RANK_Q = [("前两名", 2), ("前三名", 3), ("前五名", 5),
@@ -76,7 +77,6 @@ def check(ans, q, hits):
 def main():
     import json
     from check_eval import read_rows
-    ROOT = Path(r"D:\capse-kb")
     con = sqlite3.connect(ROOT / "data" / "processed" / "capse.db")
 
     print("=" * 88)

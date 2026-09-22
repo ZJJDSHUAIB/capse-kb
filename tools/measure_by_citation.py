@@ -35,10 +35,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-ROOT = Path(r"D:\capse-kb")
-EVAL_IN = ROOT / "docs" / "评估集.xlsx"
-
 from ask import CITE, CID          # ★ 和系统用同一套正则 —— 不另发明一份
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
+
+#  ⚠ 2026-09-22 路径迁移时这行【原本在 import 上面】,于是 ROOT 还没定义就用了它。
+#    原因是这个文件的 import 块【是分散的】(中间夹着 sys.path.insert),
+#    而迁移脚本把 `from paths import` 插在"最后一个 import 之后" —— 落在了使用之后。
+#  ★ 所以顺手把它改成 DOCS —— 比 "ROOT / docs" 少一次拼接,也不容易再错位。
+EVAL_IN = DOCS / "评估集.xlsx"
 
 
 def main():

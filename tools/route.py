@@ -70,8 +70,8 @@ r"""
 import sys, io, re
 import sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
 
 # ── 期次 ──────────────────────────────────────────────
 # 季度:"2025Q4" / "2025q4" / "2025年4季度"? 后者口语里是 Q4,但"2025年第1季度"...

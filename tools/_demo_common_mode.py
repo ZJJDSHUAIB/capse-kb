@@ -23,8 +23,8 @@ r"""
 """
 import re, json, sys, io, csv
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-PROCESSED = Path(r"D:\capse-kb\data\processed")
 BLANK = re.compile(r'\s+')
 
 GOOD         = r'二级指标(\d+)项'   # 正确

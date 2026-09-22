@@ -59,10 +59,10 @@ r"""
 import sys, io, re, sqlite3, hashlib
 from pathlib import Path
 from datetime import datetime
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-ROOT = Path(r"D:\capse-kb")
 TSV  = ROOT / "docs" / "检索变体.tsv"
 DB   = ROOT / "data" / "processed" / "capse.db"
 VEC  = ROOT / "data" / "processed" / "capse_vectors.npz"

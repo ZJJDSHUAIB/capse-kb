@@ -47,8 +47,8 @@ r"""
 import sys, io, re
 from pathlib import Path
 import fitz
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DATA = Path(r"D:\capse-kb\data")
 
 SCORE   = re.compile(r'\d+\.\d+')
 AIRPORT = re.compile(r'[\u4e00-\u9fff]+?机场')

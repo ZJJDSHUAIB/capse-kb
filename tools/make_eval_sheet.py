@@ -49,8 +49,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-OUT = Path(r"D:\capse-kb\docs\评估集.xlsx")
+OUT = DOCS / "评估集.xlsx"
 
 # ── 60 道的分配(2026-09-16 张君杰确认) ─────────────────────
 # 原则:按【系统会怎么失败】分配,不是按【用户会怎么问】分配。

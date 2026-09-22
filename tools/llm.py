@@ -54,6 +54,29 @@ def chat(prompt, system=None, max_tokens=300, temperature=0):
     key = os.environ.get("CAPSE_LLM_KEY")
     if not key:
         raise LLMError("没读到 CAPSE_LLM_KEY —— 检查 .env 在不在,或 .env.example 有没有被复制成 .env")
+    #  ═══ ★★★ 2026-09-22 加这道守卫 —— 实测踩到,而且报错完全误导 ═══
+    #  张君杰 clone 之后照 README 做:`cp .env.example .env`(还没填 key),
+    #  然后跑 make_report.py —— 崩了,而报错是:
+    #      UnicodeEncodeError: 'latin-1' codec can't encode characters in position 10-15
+    #
+    #  ★ 那个错【一个字都没提 key】。因为失败发生在 urllib 编 HTTP header 的时候 ——
+    #    header 只能用 latin-1,而当时 .env.example 的占位符是中文(「sk-换成你自己的」),
+    #    中文过不了那道编码。
+    #
+    #  ★★ 而上面那道"没读到 KEY"的守卫【没拦住】——
+    #     因为 key 不是空的,它是「sk-换成你自己的」。
+    #     **守卫判的是【在不在】,而问题出在【填得对不对】。**
+    #  ★★★ 又是"量具只覆盖它覆盖的地方":它覆盖了"没填",没覆盖"填了个假的"。
+    #
+    #  → 所以补一道:key 必须是 ASCII。不是 ASCII,就一定不是真 key。
+    if not key.isascii():
+        raise LLMError(
+            "CAPSE_LLM_KEY 里有非 ASCII 字符 —— 多半是 .env.example 里那个占位符"
+            "没换成真 key。\n"
+            f"      现在读到的是:{key[:16]}…\n"
+            "      → 打开 .env,把这一行换成你自己的 API key。\n"
+            "      (★ 顺带说:如果不加这道检查,你会收到的报错是"
+            "『latin-1 codec can't encode…』—— 那个错完全看不出和 key 有关。)")
 
     msgs = ([{"role": "system", "content": system}] if system else []) + \
            [{"role": "user", "content": prompt}]

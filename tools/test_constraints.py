@@ -48,8 +48,8 @@ r"""
 import sqlite3
 import sys, io
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
 
 # ══════════════════════════════════════════════════════════════
 #  在这里写你的用例。格式:(名字, 一条 SQL)

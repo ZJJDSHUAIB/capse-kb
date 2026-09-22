@@ -19,13 +19,13 @@ from collections import Counter
 # 复用已经写好并验过的提取器
 sys.path.insert(0, str(Path(__file__).parent))
 from extract_scores import extract
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 # 注意:这里【不能】在模块级 sys.stdout = TextIOWrapper(...)。
 # 一旦有人 import 本模块,那层 wrapper 会在被替换后被垃圾回收,
 # 回收时会顺手关掉底层 buffer —— 调用方的 print 就 "I/O operation on closed file"。
 # 编码设置只属于"我自己当脚本跑"这一种情况,放进 __main__。
 
-DATA = Path(r"D:\capse-kb\data")
-OUT  = Path(r"D:\capse-kb\data\processed\capse_scores.csv")
+OUT  = PROCESSED / "capse_scores.csv"
 
 PERIOD = re.compile(r'CAPSE_(\d{4}Q\d)')   # 只认"季度报告"这个命名
 EXPECTED_ROWS = 373                         # 5期×41 + 4期×42

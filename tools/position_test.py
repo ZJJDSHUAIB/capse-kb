@@ -23,11 +23,11 @@ r"""
 """
 import sys, io, sqlite3, time
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
-OUT = Path(r"D:\capse-kb\docs\第10课_位置测试.txt")
+OUT = DOCS / "第10课_位置测试.txt"
 REPS = 6
 
 #  题号 → (问题, 答案页, 材料池(不含答案页的部分), 判对的关键词)

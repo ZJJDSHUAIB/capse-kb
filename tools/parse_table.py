@@ -21,10 +21,10 @@ r"""
 """
 import sys, io, re, sqlite3
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DB = Path(r"D:\capse-kb\data\processed\capse.db")
 
 SCORE = re.compile(r"4\.\d\d")
 
@@ -102,7 +102,7 @@ def main():
     print()
     print("  ★ 拿标准答案核一下解析对不对:")
     from check_eval import read_rows
-    rows = read_rows(Path(r"D:\capse-kb\docs\评估集.xlsx"))
+    rows = read_rows(DOCS / "评估集.xlsx")
     for no, cid, want in ((46, "2025Q4-P18", "北京大兴国际机场 4.28"),
                           (47, "2025Q4-P19", "厦门高崎国际机场 4.25"),
                           (48, "2025Q4-P21", "无锡硕放国际机场 4.17")):

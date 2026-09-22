@@ -20,10 +20,10 @@ r"""
 """
 import sys, io, json
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-ROOT = Path(r"D:\capse-kb")
 N = 3
 
 

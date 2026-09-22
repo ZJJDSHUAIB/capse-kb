@@ -40,10 +40,10 @@ r"""
 """
 import sys, io, re, sqlite3, argparse
 from pathlib import Path
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
-DB       = Path(r"D:\capse-kb\data\processed\capse.db")
-EVAL_IN  = Path(r"D:\capse-kb\docs\评估集.xlsx")
-EVAL_OUT = Path(r"D:\capse-kb\docs\评估集_结果.xlsx")
+EVAL_IN  = DOCS / "评估集.xlsx"
+EVAL_OUT = DOCS / "评估集_结果.xlsx"
 
 NUM = re.compile(r'\d+(?:\.\d+)?')
 

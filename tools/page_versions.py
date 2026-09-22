@@ -45,9 +45,11 @@ r"""
                             ↑ 正好是答案键说的"三档"
 """
 import re
+from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 PERIOD = re.compile(r'\d{4}Q\d')
 WS = re.compile(r'\s+')
+NUM = re.compile(r'\d+(?:\.\d+)?')
 
 
 def norm(text):
@@ -59,19 +61,45 @@ def norm(text):
     return WS.sub('', PERIOD.sub('◇', text or ''))
 
 
-def versions(con, page):
+def _大类(页类型):
+    """`数据页·已配对` → `数据页`。
+
+    ★ 为什么要这一步:切片时我给重排过的数据页标了"·已配对",
+      那是个【加工标记】,不该参与"这两个块是不是同一页的版本"这个判断。
+    """
+    return str(页类型 or "").split("·")[0]
+
+
+def versions(con, page, 页类型=None):
     """这一页有几个版本?
 
     返回 [(期次列表, 代表文本, 代表期), ...],按期次先后排。
     只有一组 → 这一页跨期是同一段文字,没有版本问题。
+
+    ═══ ★★ 2026-09-22 加的参数:页类型 ═══
+      【为什么必须加】2025Q4 那份 PDF 有 27 页,别的只有 14~15 页 ——
+      它的页结构本来就不一样。实测:
+
+          各期 P12:2023Q3~2025Q3 全是【叙述页】("测评背景及要点")
+                    ★ 2025Q4-P12 是【数据页】("北京大兴 3.90 …")
+
+      ★ 不按页类型滤的话,那个分数表会被当成"P12 的另一个版本",
+        混进多版本说明里 —— 实测让题 39 从满分掉到 0。
+      ★★ 而更根本的是:这暴露了一个【本来就有的问题】——
+         同一页码在不同期次【可能是完全不同的东西】。
+         "同页多期"这个说法,只在【页结构一致的期次之间】成立。
+      ★★★ 所以:传了页类型就按它滤;不传就还是老行为(兼容旧调用)。
     """
-    rows = con.execute(
-        "SELECT chunk_id, 期次, 文本 FROM chunk WHERE 页码=? ORDER BY chunk_id",
-        (int(page),)).fetchall()
+    sql = "SELECT chunk_id, 期次, 文本, 页类型 FROM chunk WHERE 页码=?"
+    args = [int(page)]
+    rows = con.execute(sql + " ORDER BY chunk_id", args).fetchall()
+    if 页类型:
+        want = _大类(页类型)
+        rows = [r for r in rows if _大类(r[3]) == want]
     if not rows:
         return []
     groups, sig = [], {}
-    for cid, per, t in rows:
+    for cid, per, t, _k in rows:
         k = norm(t)
         if k in sig:
             groups[sig[k]][0].append(per)
@@ -81,9 +109,12 @@ def versions(con, page):
     return [(g[0], g[1], g[2]) for g in groups]
 
 
-def describe(con, page):
-    """给人看的一句话。多版本才返回;单版本返回 None(不啰嗦)。"""
-    vs = versions(con, page)
+def describe(con, page, 页类型=None):
+    """给人看的一句话。多版本才返回;单版本返回 None(不啰嗦)。
+
+    ★ 页类型要【一路传下来】—— 理由见 versions() 的注释。
+    """
+    vs = versions(con, page, 页类型)
     if len(vs) <= 1:
         return None
     lines = [f"★ 第 {page} 页在 {sum(len(p) for p, _, _ in vs)} 期里有 {len(vs)} 个版本:",
@@ -92,6 +123,37 @@ def describe(con, page):
         span = pers[0] if len(pers) == 1 else f"{pers[0]}~{pers[-1]}"
         #  只截一小段当指纹 —— 全文太长,而差异通常在开头
         lines.append(f"    · {span}(共 {len(pers)} 期):{text[:70].strip()}…")
+    #  ⚠⚠ 2026-09-22 加这一行 —— 实测踩出来的:
+    #     上面每版只截 70 字,于是那一行【以"…"结尾,看起来像没说完】。
+    #     ★ 而它正好撞在判分要判的"数字/专名齐不齐"上 ——
+    #       判分有时候把这句截断当成"没列完",于是判错。
+    #       实测:题39 判 10 次,8 对 2 错,错的那两次理由都是"…未完整列出"。
+    #  ★★ 所以:明说"这是摘要"。说了之后,判分就不会把那句截断算成"漏"。
+    #     而这也不是为了判分 —— 用户看到这句,同样知道该去来源里找全文。
+    lines.append("    (以上每版只摘了开头 70 字 —— 全文见来源里的那些页)")
+
+    #  ═══ ★★★ 2026-09-22 新增:这几版的【数字】一不一样? ═══
+    #  实测(第 7 页):三版分别是「一级指标6项、二级指标30项」「6项、31项」「7项、28项」。
+    #
+    #  ★ 而这带来一个【判据够不着的错】:
+    #      答案写「一级指标7项、二级指标30项」——
+    #      每个数都在库里出现过、出处是真的、格式也正常,
+    #      而【没有一期是这么写的】。它是把两版的数【混着说了】。
+    #      实测:三条硬判据(audit/出处/机场名)对它【全部报空】。
+    #
+    #  ★★ 为什么是"标注"而不是"修判据":
+    #      要判「7 该配 28 还是 30」,判据得知道【哪一页的哪一句是一个整体】——
+    #      那是把材料按"页 × 版本"重新组织,另一个量级的改动。
+    #      而让它【看得见】便宜得多,而且不假装自己判得准。
+    #
+    #  ★★★ 这一行同时给两种人看:
+    #      人 —— 读到这里就知道"引用时必须说清是哪一版";
+    #      模型 —— 见 gen_answer():notes 现在也会进提示词(2026-09-22 之前不给它)。
+    nums = [set(NUM.findall(t)) for _, t, _ in vs]
+    if len({frozenset(n) for n in nums}) > 1:
+        lines.append("  ★★ 这几版的【数字不一样】—— 引用时必须说清是哪一期的那一版。"
+                     "把两版的数【混着说】是不对的"
+                     "(比如「一级指标7项 + 二级指标30项」,没有哪一期是这么写的)。")
     return "\n".join(lines)
 
 
@@ -99,7 +161,7 @@ if __name__ == "__main__":
     import sys, io, sqlite3
     from pathlib import Path
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-    con = sqlite3.connect(r"D:\capse-kb\data\processed\capse.db")
+    con = sqlite3.connect(DB)
     print("库里所有跨期的页,各有多少个版本:\n")
     for (pg,) in con.execute(
             "SELECT 页码 FROM chunk GROUP BY 页码 HAVING COUNT(DISTINCT 期次)>1 ORDER BY 页码"):
