@@ -335,9 +335,29 @@ def find_airports(con, q, airports):
 
 
 
+#  ═══ ★★★ 2026-09-22 加:固定答案名 ═══
+#  【为什么 —— 量出来的根因,不是设想】
+#      Agent 评估里 A02/I02 两道失败,追下去发现是【上游】:
+#        问「那合肥新桥呢」→ 查表抛 CannotAnswer「认不出这题在问哪个指标」
+#      ★ 而根因是:「综合得分」【不在那 7 个一级指标里】——
+#        它是【总分】,住在 综合得分 表里,而不是 指标得分 表里。
+#        所以 find_indicator 从来认不出它。
+#      ★★ 那为什么主流程答得对?—— 因为答案层有个兜底(ask.asks_overall)
+#        替它选了"综合得分"。而那个选择【没进记忆】,所以连续问时第二句继承不到。
+#
+#  ⚠ 这份名单和 ask.py:729 的「_已知的名字」是【同一份】,但用途不同:
+#      ask.py 那份判"该不该拒答";这一份判"用户点名了哪个指标"。
+#    ★ 先只加这一份,并在这里指回去 —— 如果哪天发现两处不一致,那就该合成一个。
+#      ⚠ 不包含「得分情况」:那是【问法】,不是指标名。
+固定答案名 = ('综合得分', '综合评分', '综合分', '总分', '总评分', '总得分',
+              '整体得分', '整体分')
+
+
 def find_indicator(con, q, 表=None):
     """问题里提到的指标。★ 形状和 find_airport 一模一样 —— 规则也只写这一遍。"""
-    inds = 表 if 表 is not None else load_indicators(con)
+    inds = list(表) if 表 is not None else list(load_indicators(con))
+    #  ★ 固定答案名也要算候选 —— 见上面那段注释
+    inds += [x for x in 固定答案名 if x not in inds]
     hits = [i for i in inds if i in q]
     if not hits:
         return _结论([], "问题里没有库里任何一个指标名", "没找到")
@@ -551,7 +571,22 @@ def route(con, q, airports, indicators, intent=None):
         return "拒答", False, f"这些期次不在库里: {sorted(unknown)}"
 
     # 指标级数据只有 2025Q4 —— 这是语料的真实形状,不是缺失
-    if indicator and periods - {"2025Q4"}:
+    #
+    #  ⚠⚠ 2026-09-22 实测改坏的地方:这个检查原来只写 `if indicator` ——
+    #     而那个写法背后有个【没说出口的假设】:
+    #         "indicator 有值" = "在问一级指标"。
+    #     ★ find_indicator 加了「固定答案名」之后,那个假设【不成立了】:
+    #       "综合得分"会被抽出来,而它【不是一级指标】—— 它是总分,
+    #       住在 综合得分 表里,每一期都有。
+    #     ★★ 实测代价:主流程从 60/60 掉到 45/60,「数值·比较」8 道坏了 7 道 ——
+    #        因为比较题里问的正是"综合得分"。
+    #     ★★★ 所以:排除"总分那类"。
+    #        教训:上游的输出变了含义,下游【按旧含义写的判据】要一起看。
+    #  ⚠ 用 route.py 自己那份 固定答案名 —— WHOLE 在 ask.py 里,
+    #    而 route 不能从 ask 导入(ask 导入 route,会绕回去)。
+    #    ★ 这也是"语法过、导入过、跑起来才崩"的一次:
+    #      NameError 不在编译期报,所以写完必须【真的跑一道】。
+    if indicator and indicator not in 固定答案名 and periods - {"2025Q4"}:
         return "拒答", False, (f"指标级(一级指标)数据只有 2025Q4 一期,"
                                f"问题涉及 {sorted(periods - {'2025Q4'})}")
 
