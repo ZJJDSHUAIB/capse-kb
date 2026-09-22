@@ -44,7 +44,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from route import (load_airports, load_indicators, find_periods, find_airport,
-                   find_airports, find_indicator, route, verify)
+                   find_airports, find_indicator, route, verify, 单值)
 from build_search import search, searchable, search_multi, search_merged
 from route_llm import judge_intent, rewrite_query, rewrite_query_alt
 from llm import LLMError
@@ -1363,9 +1363,10 @@ def answer_search(con, q, k=5, periods=None):
 
 
 def ask(con, q, airports, indicators):
-    periods = find_periods(q)
-    airport = find_airport(con, q, airports)
-    indicator = find_indicator(q, indicators)
+    #  ★ 统一形状之后(第 15 课):期次取"值"这个集合,机场/指标取单值。
+    periods = set(find_periods(con, q)["值"])
+    airport = 单值(find_airport(con, q, airports))
+    indicator = 单值(find_indicator(con, q, indicators))
 
     # ★★ 这三道检查【提到路由之前】—— 因为它们和走哪条路无关。
     #   第一版把它们装在 answer_sql 里(SQL 那条路),结果题 57 走的是检索,

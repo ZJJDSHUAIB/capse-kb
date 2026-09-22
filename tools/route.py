@@ -130,9 +130,55 @@ def load_indicators(con):
     return [r[0] for r in con.execute("SELECT DISTINCT 指标 FROM 指标得分")]
 
 
-def find_periods(q):
-    """问题里提到的季度。返回集合(可能空)。"""
-    return {f"{y}Q{m}" for y, m in QUARTER.findall(q)}
+# ══════════════════════════════════════════════════════════════════
+#  ★★★ 2026-09-22 第 15 课:抽参数的那三个函数,统一成【同一种形状】
+#
+#  ═══ 改之前是什么样(实测跑出来的)═══
+#      find_periods(q)                 ← 只要问题,返回【集合】
+#      find_airport(con, q, 表)         ← 要三样,返回【一个值或 None】
+#      find_indicator(q, 表)            ← 要两样,返回【一个值或 None】
+#
+#      ★ 三样东西,三种调用方式,两种返回类型。
+#      ★★ 而"取最长匹配"这个猜测规则,在 find_airport 和 find_indicator 里
+#         各写了一遍 —— 同一个判断写两遍,迟早不一致。
+#
+#  ═══ ★★★ 更要紧的问题:"取最长"是一个【没说出口的猜测】═══
+#      问题里同时出现「上海浦东」和「浦东」时,它默默取长的那个,然后走了。
+#      ★ 调用方看到的是"找到了一个机场",【看不出这是猜的】。
+#      ★★ 而这个项目一路在治的就是这个:猜测要被标出来,不能装作确定。
+#
+#  ═══ 统一成什么形状 ═══
+#      入参:(con, q, 表=None)  —— 表给了就用(省一次查询),没给就自己去库里拿
+#      出参:{"值": [...], "怎么定的": "…", "把握": "确定/唯一/有歧义/没找到"}
+#
+#      ★ 为什么"值"一律是【列表】:期次天然可能是多个
+#        ("2023Q3 和 2025Q4 比较"),统一成列表就不用写两套处理。
+#      ★★ 为什么必须带"怎么定的":那是【结果的来源】——
+#         第 14 课刚学完"一个不报来源的成功,和真的一模一样"。
+#      ★★★ 为什么必须有"把握":让调用方(以后是模型)能看见【这是猜的】。
+# ══════════════════════════════════════════════════════════════════
+
+def _结论(值, 怎么定的, 把握):
+    """抽参数的统一返回形状 —— 把"抽出什么"和"怎么抽的"一起交出去。"""
+    return {"值": list(值), "怎么定的": 怎么定的, "把握": 把握}
+
+
+def 单值(结论):
+    """从统一形状里取【那一个】值 —— 没有就是 None。
+
+    ★ 给"最多只会有一个"的调用方用(机场、指标)。
+      ⚠ 期次【不能用它】—— 期次天然可能是多个("2023Q3 和 2025Q4 比较"),
+        用了会【默默丢掉】其中几个,而那又是一次静默。
+    """
+    return 结论["值"][0] if 结论["值"] else None
+
+
+def find_periods(con, q, 表=None):
+    """问题里提到的季度。返回统一形状(见上面那段说明)。"""
+    got = sorted({f"{y}Q{m}" for y, m in QUARTER.findall(q)})
+    if not got:
+        return _结论([], "句子里没有「2025Q4」这种写法", "没找到")
+    return _结论(got, f"句子里直接写着 {'、'.join(got)}", "确定")
 
 
 def mentions_annual(q):
@@ -140,10 +186,21 @@ def mentions_annual(q):
     return "年度" in q and not QUARTER.search(q)
 
 
-def find_airport(con, q, airports):
-    """在问题里找机场简称。取最长匹配(避免"上海浦东"被"上海"这种短名抢走)。"""
+def find_airport(con, q, 表=None):
+    """在问题里找机场简称。取最长匹配(避免「上海浦东」被「上海」这种短名抢走)。
+
+    ⚠ 多个命中时那是【猜】—— 所以"把握"标成"有歧义",不假装是确定的。
+    """
+    airports = 表 if 表 is not None else load_airports(con)
     hits = [core for core in airports if core in q]
-    return airports[max(hits, key=len)] if hits else None
+    if not hits:
+        return _结论([], "问题里没有库里任何一个机场名", "没找到")
+    名 = [airports[c] for c in hits]
+    取了最长 = max(名, key=len)
+    说明 = f"问题里出现了 {len(hits)} 个机场名:{'、'.join(名)}"
+    if len(hits) == 1:
+        return _结论([取了最长], 说明, "唯一")
+    return _结论([取了最长], 说明 + f";取了最长的那个「{取了最长}」", "有歧义")
 
 
 def find_airports(con, q, airports):
@@ -208,9 +265,17 @@ def find_airports(con, q, airports):
 
 
 
-def find_indicator(q, indicators):
-    hits = [i for i in indicators if i in q]
-    return max(hits, key=len) if hits else None
+def find_indicator(con, q, 表=None):
+    """问题里提到的指标。★ 形状和 find_airport 一模一样 —— 规则也只写这一遍。"""
+    inds = 表 if 表 is not None else load_indicators(con)
+    hits = [i for i in inds if i in q]
+    if not hits:
+        return _结论([], "问题里没有库里任何一个指标名", "没找到")
+    取了最长 = max(hits, key=len)
+    说明 = f"问题里出现了 {len(hits)} 个指标名:{'、'.join(hits)}"
+    if len(hits) == 1:
+        return _结论([取了最长], 说明, "唯一")
+    return _结论([取了最长], 说明 + f";取了最长的那个「{取了最长}」", "有歧义")
 
 
 NUMBER = re.compile(r'\d+(?:\.\d+)?')
@@ -344,9 +409,10 @@ def route(con, q, airports, indicators, intent=None):
       上面还有一层(第 5 课接的大模型)能判。留个入口,它判完能重新走一遍,
       走的是【同一条】后面的流程,不需要在别处再写一遍可用性检查。
     """
-    periods = find_periods(q)
-    airport = find_airport(con, q, airports)
-    indicator = find_indicator(q, indicators)
+    #  ★ 统一形状之后:per 是它【找到的期次集合】,air/ind 是单值
+    periods = set(find_periods(con, q)["值"])
+    airport = 单值(find_airport(con, q, airports))
+    indicator = 单值(find_indicator(con, q, indicators))
 
     # ══ 第①步:它要【一个数】,还是要【一段话】? ═══════════
     #    ※ 这一步必须最先做。第一版我把它排在第②步,先用"在库吗"卡了一道,
@@ -490,7 +556,8 @@ def main():
         w, _, _ = route(con, q, airports, indicators)
         mark = ""
         if w != "SQL":
-            why = verify(con, q, find_periods(q), find_airport(con, q, airports),
+            why = verify(con, q, set(find_periods(con, q)["值"]),
+                         单值(find_airport(con, q, airports)),
                          search(con, q, k=5) if w == "检索" else [])
             if w == "判不出":
                 loud.append(q)

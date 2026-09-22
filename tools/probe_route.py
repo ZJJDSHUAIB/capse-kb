@@ -24,7 +24,7 @@ except Exception:
     pass
 
 from route import (load_airports, load_indicators, route, DB,   # noqa: E402
-                   NUMERIC, PROSE, find_indicator)
+                   NUMERIC, PROSE, find_indicator, 单值)
 from check_eval import read_rows                              # noqa: E402
 from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
@@ -55,7 +55,8 @@ def main():
         if not q or want not in ROUTES:
             continue
         got, flag, why = route(con, q, airports, indicators)
-        hits[r["题号"]] = (NUMERIC.findall(q), PROSE.findall(q), find_indicator(q, indicators))
+        hits[r["题号"]] = (NUMERIC.findall(q), PROSE.findall(q),
+                           单值(find_indicator(con, q, indicators)))
         conf[(want, got)] = conf.get((want, got), 0) + 1
         if got == "判不出":
             unknown.append((r["题号"], want, q))

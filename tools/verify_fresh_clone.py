@@ -100,8 +100,41 @@ def main():
         return r.returncode
 
     rc_db = run(f"{sys.executable} tools/build_db.py")
+    #  ═══ ★★★ 2026-09-22 补:重建是【两步】,不是一步 ═══
+    #  【为什么补这一步 —— 实测漏掉过】
+    #      第一版只跑了 build_db.py,然后问一道 SQL 题,就宣布"全过"。
+    #      ★ 而 chunk 表和全文索引是【build_search.py】建的 —— SQL 不用它们,
+    #        所以库缺了一大半,那一道题照样答得出来。
+    #      ★★ 实测代价:漏掉这步之后,60 道评估从 60/60 掉到 43/60,
+    #         而掉的全是「叙述·检索」那 15 道 —— 验收脚本一道都没测到。
+    #      ★★★ 所以:验收脚本自己也是"量具只覆盖它覆盖的地方"。
+    rc_search = run(f"{sys.executable} tools/build_search.py")
     rc_ask = run(f'{sys.executable} tools/ask.py '
                  f'--ask "2025Q4上海浦东国际机场综合得分是多少"')
+
+    #  ⑤ ★ 直接查库,把【两条路】都点到 —— 不走完整链路,不用大模型
+    #     这么测的理由:走完整链路要 key,而"别人刚 clone 下来"恰恰没有 key。
+    #     而"库建全了没有"这件事【不需要大模型就能验】。
+    import sqlite3
+    q = dst / "data" / "processed" / "capse.db"
+    db_ok, db_msg = False, ""
+    if q.exists():
+        try:
+            con = sqlite3.connect(q)
+            t = {n: con.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0]
+                 for n in ("meta", "综合得分", "指标得分", "机场分档",
+                           "chunk", "chunk_fts")}
+            #  ★ 真正的判据:全文索引【能搜出东西】(不是"表存在")
+            hit = con.execute("SELECT COUNT(*) FROM chunk_fts WHERE chunk_fts MATCH ?",
+                              ('"行李服务"',)).fetchone()[0]
+            db_ok = t["chunk"] > 0 and hit > 0
+            db_msg = (f"四张表 {[t['meta'], t['综合得分'], t['指标得分'], t['机场分档']]} "
+                      f"/ chunk {t['chunk']} 块 / 全文索引搜『行李服务』命中 {hit} 条")
+            con.close()
+        except Exception as e:
+            db_msg = f"{type(e).__name__}: {e}"
+    print(f"\n  $ 直接查库(不用大模型)")
+    print(f"      {db_msg}")
 
     #  ④ 三项检查
     after = md5(DB)
@@ -116,8 +149,10 @@ def main():
     else:
         print(f"❌ 【被动过!】{before} → {after}")
         print("      → 说明还有写死的路径在指向作者机器。这一条比崩掉更严重。")
-    print(f"  ③ 副本里问得出答案吗          {'✅ 能' if rc_ask == 0 else '❌ 不能'}")
-    ok = got_db and after == before and rc_ask == 0
+    print(f"  ③ 库里【两条路】都在吗        {'✅ 在' if db_ok else '❌ 缺'}"
+          f"   ← ★ 加这一条:原来只测了 SQL 那条,而缺索引它照样过")
+    print(f"  ④ 副本里问得出答案吗          {'✅ 能' if rc_ask == 0 else '❌ 不能'}")
+    ok = got_db and after == before and db_ok and rc_ask == 0
     print()
     if ok:
         print("  ★ 全过:陌生人 clone 下来能跑,而且碰不到作者机器上的东西。")
