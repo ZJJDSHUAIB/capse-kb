@@ -49,9 +49,22 @@ def source_pdf():
 
 
 def build_table(pdf_path):
+    """返回 [(期次, 指标, 机场, 得分, 来源chunk), ...]
+
+    ═══ ★ 第 8 课补:把页码从 `_page_i` 里救出来 ═══
+      改之前是 `for indicator, pairs, _page_i in extract(...)` ——
+      那个下划线前缀等于说"这个我用不上"。
+
+      **它和 build_scores_table 里那个 `_` 是同一个病,同一课发现的:**
+      页号一直在返回值里,是写代码的人【觉得用不上】才扔的。
+      而"用不上"是当时的判断 —— 当时来源只写到表名就够了。
+      **用途变了,而那个下划线没人回头看一眼。**
+    """
     rows = []
-    for indicator, pairs, _page_i in extract(pdf_path):
-        rows.extend((PERIOD, indicator, airport, score) for airport, score in pairs)
+    for indicator, pairs, page_i in extract(pdf_path):
+        src = f"{PERIOD}-P{page_i:02d}" if page_i else None
+        rows.extend((PERIOD, indicator, airport, score, src)
+                    for airport, score in pairs)
     return rows
 
 
@@ -91,7 +104,10 @@ def cross_check_bounds(rows, overall):
     而不是"改到它通过"。发现本身就是结果,要原样报出来。
     """
     by_airport = defaultdict(dict)
-    for _, indicator, airport, score in rows:
+    # ★ 用【下标】不用解包:这张表的列数刚加过一列(来源chunk),
+    #   解包会随列数变化而错位 —— 而错位【不报错】,它会把来源当成得分。
+    for r in rows:
+        indicator, airport, score = r[1], r[2], r[3]
         by_airport[airport][indicator] = float(score)
 
     bad = []
@@ -107,7 +123,7 @@ def write_csv(rows, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f)
-        w.writerow(['期次', '指标', '机场', '得分'])
+        w.writerow(['期次', '指标', '机场', '得分', '来源chunk'])
         w.writerows(rows)
 
 

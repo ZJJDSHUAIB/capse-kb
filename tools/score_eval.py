@@ -32,12 +32,13 @@ r"""
       这和第 3 课的"查不了 ≠ 查了没有"是同一个病。评估脚本自己犯这个病,
       跑出来的分数就没有意义了。
 """
-import sys, io, re, sqlite3, json, argparse
+import sys, io, re, sqlite3, json, argparse, hashlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from route import load_airports, load_indicators              # noqa: E402
 from ask import ask                                           # noqa: E402
+import ask as _ask_mod                                        # noqa: E402  ← 第9课:要改它的 USE_MERGE 开关
 from check_eval import (read_rows, answer_numbers, numbers_in,  # noqa: E402
                         explain_missing, EVAL_IN)
 
@@ -79,18 +80,70 @@ def _sub_items(ans):
 _JUDGE_CACHE = Path(r"D:\capse-kb\docs\评估集_判分缓存.json")
 _cache = json.loads(_JUDGE_CACHE.read_text(encoding="utf-8")) if _JUDGE_CACHE.exists() else {}
 
+# ── ★ 让缓存自己报数 ──────────────────────
+#   为什么非要报这个数(实测踩过):
+#   `hash()` 那个 bug 所以能活下去,是因为缓存不出声。
+#   文件在、在被写、长度在长 —— 看起来完全正常。
+#   如果它一开始就报「命中 0/35」,第一眼就能看出来。
+#   → **静默的机制要让它报数。**
+_HIT = {"hit": 0, "miss": 0}
+
+# ── ★★ 第 11 课:--no-cache,用来量【判分自己稳不稳】 ──────────
+#   为什么不加这个开关就量不出来:
+#       缓存键 = (题号, 期望答案, 系统答)。
+#       ★ 而"量判分稳不稳"要拿【同一份答案】反复判 —— 键完全一样 →
+#         100% 命中缓存 → 读到的"稳定"是【缓存命中】,不是判分给的。
+#   ★★ 而且开这个开关时【也不许写缓存】:不然会把随机结果污染进缓存,
+#      以后别的实验就会拿这些结果当"判过的"。
+_NO_CACHE = False
+
 
 def llm_judge(row, got_a):
     """返回 {"对":bool,"理由":str},或 None(判分没跑成)。"""
-    key = f"{row['题号']}|{hash(str(row['期望答案']))}|{hash(got_a)}"
-    if key in _cache:
+    # ── ★ 缓存键必须用 hashlib,不能用内置 hash() ──────
+    #   Python 的 hash() 对字符串每个进程都挂一个随机盐,
+    #   所以同一段文本每次跑算出的键都不同 → 缓存永远命中不了。
+    #   实测:#46 的系统答案三次逐字相同(md5 f6a21b13),却被判出两种结果。
+    #   同一道题在缓存文件里堆了 7 条一模一样的记录。
+    #   → 缓存存在、在被写、看起来在工作,但一次都没生效。
+
+    _k = lambda s: hashlib.md5(str(s).encode('utf-8')).hexdigest()[:12]
+    key = f"{row['题号']}|{_k(row['期望答案'])}|{_k(got_a)}"
+    if not _NO_CACHE and key in _cache:
+        _HIT["hit"] += 1
         return _cache[key]
+    _HIT["miss"] += 1
+    # ══ ★★ 第 11 课:把判据的洞补上 ═══════════════════════════
+    #  老提示词有三处没写清,实测会晃(题47 同一个答案判对 4/10 和 6/10):
+    #     · "关键事实一致就算一致"  —— 名字对、数字没给,算一致吗?没写
+    #     · "数字"两字明明在          —— 那少了数字算不算?没写
+    #     · "多说了别的,不算错"      —— ★ 那【少说了】呢?没写
+    #  ★ 实测(46/47/48 各判 10 次):
+    #      旧:0/10  6/10  0/10     ← 题47 在晃
+    #      新:0/10  0/10  0/10     ← 稳定,而且判对了(答案确实漏了 4.25)
+    #    ★★ 所以晃的主因是【规则没写清】,不是大模型天生不可靠。
+    #
+    #  ⚠ 第一版新规则我写的是"标准答案里【每一个】都必须有" —— 补过头了,实测误伤:
+    #      题52 标准答案"CASE于2012年正式成立,经过13年发展",
+    #      系统答"CASE于2012年正式成立" —— 答全了问题,却因为少一句背景被判错。
+    #    ★★ 所以改成【乙】:只把【数字】和【专有名字】当必答项,其余算加分。
+    #       理由:"数字和专名"是【客观可核的】,不靠谁去判断"关键不关键"。
+    #       而这正是这个项目一路的方向:能核的用能核的,别靠理解。
     prompt = (
         "你在给一个问答系统的答案打分。只判【意思对不对】,不管文采、不管长短。\n\n"
         f"【标准答案】\n{row['期望答案']}\n\n"
         f"【系统回答】\n{got_a[:1500]}\n\n"
         "系统回答的意思和标准答案一致吗?\n"
-        "要求:关键事实(时间、数字、指标名、结论)一致就算一致;换种说法、多说了别的,不算错。\n"
+        "★ 判据(按顺序核对):\n"
+        "  1. 标准答案里的【每一个数字】,系统回答里都必须有 —— 少一个就算错。\n"
+        "     (只数【数字】。像「经过13年发展」这种带数字的句子,\n"
+        "      数字 13 必须有;那句话本身有没有,不算判据。)\n"
+        "  2. 标准答案里点名的【每一个专有名字】(机场名 / 指标名 / 机构名),\n"
+        "     系统回答里都必须有 —— 少一个就算错。\n"
+        "  3. 上面两条【少一点都算错】,那不是「换种说法」,是【漏】。\n"
+        "  4. ★ 除了数字和专名,标准答案里【别的话】—— 比如背景说明、\n"
+        "     补充形容、结论的展开 —— 系统回答里【没有也不算错】。\n"
+        "     只要数字齐、专名齐、意思不反,就算对。\n"
         "只输出一行,格式:对|理由  或  错|理由(理由不超过30字)"
     )
     try:
@@ -102,7 +155,8 @@ def llm_judge(row, got_a):
     ok = r.startswith("对")
     why = r.split("|", 1)[1].strip() if "|" in r else r
     out = {"对": ok, "理由": why}
-    _cache[key] = out
+    if not _NO_CACHE:                       # ★ 见 _NO_CACHE 的注释:不许污染
+        _cache[key] = out
     return out
 
 
@@ -263,6 +317,60 @@ def cross_period_conflict(want_c, src_c):
     return out
 
 
+_CON = None
+
+
+def _con():
+    global _CON
+    if _CON is None:
+        _CON = sqlite3.connect(DB)
+    return _CON
+
+
+def code_judge(row, got_a, src):
+    """★★ 第 11 课:能算的题,别问大模型。返回 True(对)/False(错)/None(算不了)。
+
+    ═══ 为什么要有它 ═══
+        第 11 课实测:判分在【分档排名】那类题上会晃 ——
+           题47 同一个答案,判对 4/10,换一次实验又是 6/10。
+        ★ 原因是那类题的答案【有结构】(分数 ↔ 机场的配对),
+          而大模型判"说全了没有"时,每次掂量的尺度不一样。
+
+    ═══ 而结构能算 ═══
+        parse_table 能把那张表解析出来,于是"第一名有几个"是算得出来的。
+        ★★ 而算出来的东西【不抽样】—— 同一份材料,每次给同一个答案。
+
+    ═══ ⚠ 它只覆盖"分档排名"这一类题 ═══
+        库里现在 3 道(#46 #47 #48)。其余 57 道没有可解析的结构,还得叫大模型。
+        ★ 所以它只能【缩小】判分的噪声,消不掉。
+    """
+    from ask import check_ranked_answer
+
+    ids = re.findall(r"\d{4}Q\d-P\d+", src or "")
+    if not ids:
+        return None
+    con = _con()
+    hits = []
+    for c in ids:
+        t = con.execute("SELECT 文本 FROM chunk WHERE chunk_id=?", (c,)).fetchone()
+        if t:
+            hits.append({"chunk_id": c, "文本": t[0]})
+    if not hits:
+        return None
+    res = check_ranked_answer(got_a, str(row.get("问题") or ""), hits)
+    if res is None:
+        return None                 # 不适用 —— 交给大模型
+    return not res                  # [] → True(答全了);[缺的] → False
+
+
+def judge_one(row, got_a, src):
+    """先试代码判;判不了才叫大模型。★ 两条路都返回同一个格式。"""
+    c = code_judge(row, got_a, src)
+    if c is not None:
+        return {"对": c, "理由": "代码判的 —— 从材料里的得分表算出来的,不抽样"}
+    return llm_judge(row, got_a)
+
+
 def judge(row, got):
     """判一道题。got = 系统实际返回的那个 dict(或 from-json 里存下来的)。
 
@@ -319,7 +427,7 @@ def judge(row, got):
                 return {"去向对": True, "得分": 0.0, "证据": False,
                         "说明": f"★ 系统只命中了分界的一边({n_hit}/2)—— "
                                 f"它不知道这一页的定义换过({detail})"}
-            why = llm_judge(row, got_a)
+            why = judge_one(row, got_a, src)
             if why is None:
                 return {"去向对": True, "得分": 0.0, "证据": True, "机器判不了": True,
                         "说明": f"分界两边都命中了,但大模型判分没跑成 —— 要人眼看"}
@@ -348,7 +456,7 @@ def judge(row, got):
                             f"同一页不同期说法不同,它却三段平铺、不标注,"
                             f"把矛盾当成了印证"}
         # ①b 意思对(大模型判)
-        why = llm_judge(row, got_a)
+        why = judge_one(row, got_a, src)
         if why is None:
             return {"去向对": True, "得分": 0.0, "证据": True, "机器判不了": True,
                     "说明": note + "证据命中了,但大模型判分没跑成 —— 要人眼看"}
@@ -367,11 +475,22 @@ def judge(row, got):
     if not any(answer_numbers(s) for s in subs):
         return {"去向对": True, "得分": 0.0, "机器判不了": True,
                 "说明": "期望答案里没有可比的数字"}
+    # ★ 分母只算【可比的子项】(2026-09-18 修,我自己的 bug)
+    #
+    #   改之前:分母是 len(subs),但循环里 `if not want_n: continue` 会跳掉
+    #   【没有数字的子项】—— 那些项永远拿不到分,却永远占着分母。
+    #
+    #   后果(实测):#11 的期望答案是
+    #       「深圳宝安：4.26；上海浦东：4.22；深圳宝安高」
+    #     第三项「深圳宝安高」里没有数字 → 被判分跳过 →
+    #     **这道题的满分被压成 2/3 = 0.67,任何系统都到不了 1.0。**
+    #
+    #   这等于给一批题【装了个够不到的天花板】,而分数看上去完全正常。
+    #   和这个项目一路在打的是同一个东西:一个静默的尺子错误。
+    subs_ok = [s for s in subs if answer_numbers(s)]
     got_subs, miss_txt = 0, []
-    for s in subs:
+    for s in subs_ok:
         want_n = answer_numbers(s)
-        if not want_n:
-            continue
         miss = want_n - have_n
         if miss:
             still, derived = explain_missing(miss, have_n)
@@ -379,7 +498,7 @@ def judge(row, got):
                 miss_txt.append(f"{s.strip()[:24]} → 缺 {sorted(still)}")
                 continue
         got_subs += 1
-    score = got_subs / len(subs) if subs else 0.0
+    score = got_subs / len(subs_ok) if subs_ok else 0.0
     if score == 1.0:
         return {"去向对": True, "得分": 1.0, "说明": ""}
     return {"去向对": True, "得分": score,
@@ -447,6 +566,53 @@ def report(rows, gots):
         print(f"      另有 {len(zero_hit)} 道走成了【检索 0 条】(口径③:这不是拒答,是检索失败)"
               f": {[r['题号'] for r in zero_hit]}")
 
+    # ── ★ 指标 8/9:告警率(按路径分层)──────────────────────
+    #
+    #  口径(张君杰定的):
+    #    错误告警率 = 实际答错/答不全的题里,系统发了【警告】的 ÷ 同类题总数
+    #    误报率     = 实际答对的题里,系统发了【警告】的 ÷ 同类题总数
+    #
+    #  ※ 分母不用 60 —— 这个指标测的是「系统犯错后意识到自己错了的概率」,
+    #    不是「60 道里有多少道出现警告」。
+    #    该拒答的题留在上面『拒答两个方向』里,不混进来。
+    #
+    #  ※ ★ 为什么必须【按路径分层报】:
+    #    整个 ask.py 里只有两处会写警告(判不出 / 检索的 verify),
+    #    **SQL 和 拒答两条路【还没有任何检查】** ——
+    #    那不是「结构上不可能」,是「那条路上一个检查都没写」。
+    #    不分层的话,这两个数会被『SQL 占多少比例』埋掉,改了系统也看不出来:
+    #        错误告警率上限只有 5/16 = 31%(11 道 SQL 永远不可能报警)
+    #        误报率上限只有 11/44 = 25%
+    #    分层之后『检索路径 0/5』一眼可见 —— 那才是『有机制却不用』的证据。
+    #
+    #  ⚠ 分母的线:<1.0(不满分即计入)。这是【口径】,不是随手取的 ——
+    #    换成 <0.5,分母就从 16 掉到 10。线要人定,不能默认。
+    def _cnt(rs):
+        tot = len(rs)
+        got = sum(1 for r in rs if r.get('警告'))
+        return got, tot, (got / tot if tot else 0)
+
+    print('\n  ★ 指标 8/9:告警率(按路径分层)—— 系统犯错时,知不知道自己错了')
+    # ── ★ 附:仍然静默的清单(张君杰定的)──────────────────────
+    #   为什么主指标不够:「错的都该报警」会让【容易报的错】先涨上去,
+    #   从而掩盖「最难报的那些还没报」。
+    #   例:7 道错题里 5 道容易报 → 5/7 = 71% 看起来很好,
+    #      而那 2 道【最贵的】还是静默。
+    #   → 主指标说「进步了多少」,这张清单说「还没做到什么」。两个都看。
+    for _lab, _grp in (('答错/不全(错误告警率)', [r for r in scored if r['得分'] < 1.0]),
+                       ('答对  (误报率)     ', [r for r in scored if r['得分'] == 1.0])):
+        _g, _t, _r = _cnt(_grp)
+        print(f'      {_lab}  {_g}/{_t} = {_r:.0%}')
+        for _p in ('SQL', '检索', '拒答'):
+            _sub = [r for r in _grp if str(r['去向']).startswith(_p)]
+            if not _sub:
+                continue
+            _g2, _t2, _r2 = _cnt(_sub)
+            print(f'          {_p:<4} {_g2}/{_t2}')
+    _silent = [r for r in scored if r['得分'] < 1.0 and not r.get('警告')]
+    if _silent:
+        print(f'      ★ 仍然静默(答错了、但系统一声不吭):{len(_silent)} 道 '
+              f'{[r["题号"] for r in _silent]}')
     print("\n  ★ 没拿满分(去向对,但答案不全):")
     for r in res:
         if r["去向对"] and r["得分"] < 1.0:
@@ -469,10 +635,65 @@ def report(rows, gots):
 
 
 def main():
+    global OUT, _NO_CACHE
     ap = argparse.ArgumentParser()
     ap.add_argument("--from-json", action="store_true",
                     help="不重新问系统,直接拿上次存下来的答案重新判分")
+    ap.add_argument("--merge", action="store_true",
+                    help="★ 第9课:打开【关键词+向量合并】再跑(规则在 my_merge.py)")
+    ap.add_argument("--gen", action="store_true",
+                    help="★ 第10课:打开【生成层】再跑 —— 让大模型作答,而不是把材料拼起来")
+    ap.add_argument("--retry", action="store_true",
+                    help="★ 第12课:打开【重试循环】—— 生成→诊断→做对应的动作(见 ask.gen_with_retry)")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="★ 第11课:不用判分缓存 —— 量【判分自己稳不稳】时必须加,"
+                         "否则同一份答案全命中缓存,读到的稳定是假的")
+    ap.add_argument("--tag", default="",
+                    help="★ 第9课:给这一轮起个名,结果另存成 评估集_跑分_<tag>.json")
     args = ap.parse_args()
+
+    # ★ 规矩第 ⑧ 条:每轮结果另存带轮次名,不共用固定文件名。
+    #   共用会把「这是哪一次跑的」这件事抹掉 —— 而这个项目已经栽过一次。
+    if args.tag:
+        OUT = OUT.with_name(f"评估集_跑分_{args.tag}.json")
+
+    # ★★ 静默失败守卫:--from-json 是【不重跑】的,它读的是别人已经跑好的答案。
+    #   这时候 --merge 开关【碰不到任何东西】—— 它会静静地什么都不做,
+    #   而你会在报告里看到一个"用了合并"的分数,其实那是旧的。
+    #   项目一路的规矩:沉默的机制要让它出声。
+    if args.merge and args.from_json:
+        raise SystemExit("  ✗ --merge 和 --from-json 一起用没有意义:\n"
+                         "      --from-json 不重跑系统,所以合并开关根本没机会生效,\n"
+                         "      你拿到的会是【旧答案 + 新标签】。要么去掉 --from-json。")
+    #  ★ 同一个守卫要盖到 --gen —— 理由一模一样。少盖一个,下一次就栽在这。
+    if args.gen and args.from_json:
+        raise SystemExit("  ✗ --gen 和 --from-json 一起用没有意义:\n"
+                         "      --from-json 不重跑系统,生成层根本没机会跑,\n"
+                         "      你拿到的会是【旧答案(材料拼接) + 『用了生成层』的标签】。")
+
+    if args.merge:
+        _ask_mod.USE_MERGE = True
+        print("  ★ 合并检索:开(my_merge.merge_rank 参与排序)")
+    else:
+        print("  ★ 合并检索:关(只用关键词 —— 第 5 课以来的行为,基准就在这一档)")
+    if args.gen:
+        _ask_mod.USE_GEN = True
+        print("  ★ 生成层:开(大模型作答 + audit 核数字,见 ask.gen_answer)")
+    else:
+        print("  ★ 生成层:关(答案 = 把取回的原文拼起来 —— 第 5 课以来的行为)")
+    if args.retry:
+        _ask_mod.USE_RETRY = True
+        print("  ★ 重试循环:开(诊断→动作;规则在 ask.RETRY_PLAN)")
+    else:
+        print("  ★ 重试循环:关(生成一次就完事)")
+    if args.no_cache:
+        _NO_CACHE = True
+        print("  ★ 判分缓存:【关】—— 每次都真判,量判分稳定性时必须这样")
+    else:
+        print("  ★ 判分缓存:开(命中率会报在末尾)")
+    if args.tag:
+        print(f"  ★ 轮次标签:{args.tag}  →  {OUT.name}")
+    print()
 
     rows = [r for r in read_rows(EVAL_IN) if r["问题"]]
     if args.from_json:
@@ -489,6 +710,19 @@ def main():
         _JUDGE_CACHE.write_text(json.dumps(_cache, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n  系统原始答案: {OUT}")
     print(f"  大模型判分缓存: {_JUDGE_CACHE.name}({len(_cache)} 条)")
+    # ★ 报命中率 —— 让"缓存失灵"这种事自己浮出来
+    _tot = _HIT["hit"] + _HIT["miss"]
+    if _tot:
+        _rate = _HIT["hit"] / _tot
+        #  ★ --no-cache 时命中 0 是【应该的】,不是异常 ——
+        #    第一版没区分,于是量判分稳定性那三次都打出一句
+        #    "太低说明缓存键有问题"的误导提示。
+        #    ★ 提示的口径没跟上开关的状态 —— 和那条旧告警是同一个病。
+        _note = ("   (缓存是【关】的 —— 命中 0 是应该的)" if _NO_CACHE else
+                 "   ← ★ 太低说明缓存键有问题,分数不可比" if _rate == 0 and _tot >= 3 else "")
+        print(f"  缓存命中率: {_HIT['hit']}/{_tot} = {_rate:.0%}{_note}")
+    else:
+        print("  缓存命中率: 这一轮没走判分(全在缓存里,或没有走检索的题)")
 
 
 if __name__ == "__main__":

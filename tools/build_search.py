@@ -123,28 +123,57 @@ def searchable(query):
     return len(SAFE.sub('', query)) >= MIN_TRIGRAM
 
 
-def search(con, query, k=DEFAULT_K):
+def search(con, query, k=DEFAULT_K, periods=None):
     """检索入口。返回按相关度排序的 chunk 列表。
 
     第 5 课的路由会直接调这个函数 —— 所以它必须是个函数,不是一个脚本。
     注意:调用前先用 searchable() 判断,否则无法区分"太短"和"没命中"。
+
+    ═══ ★ periods:期次过滤(第 7 课加的)════════════════════
+      用户指名了期次(「2024Q2的…」),检索就【只在那个期次里找】。
+
+      ※ 为什么需要它 —— 查出来的机制不是说出来的:
+        改之前,期次能对上靠的是三件事【恰好同时成立】:
+          ① 用户问题里写了期次
+          ② 大模型改写时【恰好】把它原样抄进了检索词
+          ③ chunk 文本里【恰好】印着期次
+        三者缺一,期次就飘了。而这三件事【没有任何一件被代码保证,也没被检查过】。
+        更要命的是:即使三者都成立,期次词做的也只是「把对的期排第一」——
+        它是【加权】,不是【过滤】:通用词(「服务测评」)照样命中所有期次的同页,
+        只是排后面。K=1 只看第一名时看不出来,K=3 就露馅。
+        实测:15 道期次敏感题里,污染率 37%(检索结果里有非目标期次的内容)。
+
+      ※ ★ 为什么 periods 为空时【必须不过滤】(这是设计,不是疏忽):
+        题 39 的问句里【没有期次】(「这个服务测评是个什么情况啊」)。
+        对这类题:
+          - 过滤它  → 没有目标期次可过滤,过滤个空气
+          - 默认取最新期 → 【直接把它做死】:它的判据要求的正是
+                          「同一页给出两个版本」,取最新就只剩一个版本了
+        → 所以「没期次就不过滤」不是偷懒,是【有意保留现状】。
+          期次过滤只负责把「已有点名的题」从碰巧变可靠,不替用户猜他想要哪期。
     """
     q = SAFE.sub('', query)
     if len(q) < MIN_TRIGRAM:
         return []
-    sql = """
+    where = "chunk_fts MATCH ?"
+    args  = [f'"{q}"']
+    if periods:                      # ← 空列表/None 都不过滤
+        where += f" AND c.期次 IN ({','.join('?' * len(periods))})"
+        args += list(periods)
+    args.append(k)
+    sql = f"""
         SELECT c.chunk_id, c.期次, c.页码, bm25(chunk_fts) AS 得分, c.文本
         FROM chunk_fts JOIN chunk c ON c.rowid = chunk_fts.rowid
-        WHERE chunk_fts MATCH ?
+        WHERE {where}
         ORDER BY 得分
         LIMIT ?
     """
     return [{"chunk_id": r[0], "期次": r[1], "页码": r[2],
              "得分": round(r[3], 3), "文本": r[4]}
-            for r in con.execute(sql, (f'"{q}"', k))]
+            for r in con.execute(sql, args)]
 
 
-def search_multi(con, query, k=DEFAULT_K):
+def search_multi(con, query, k=DEFAULT_K, periods=None):
     """多关键词检索。按空格拆开,每个词各搜一遍,按最相关合并。
 
     ═══ 为什么不能直接把整串丢进 search() ═══
@@ -170,11 +199,83 @@ def search_multi(con, query, k=DEFAULT_K):
     for term in query.split():
         if not searchable(term):
             continue                      # 单个词太短,trigram 处理不了,跳过它
-        for h in search(con, term, k=k):
+        for h in search(con, term, k=k, periods=periods):
             cid = h["chunk_id"]
             if cid not in best or h["得分"] < best[cid]["得分"]:
                 best[cid] = h
     return sorted(best.values(), key=lambda h: h["得分"])[:k]
+
+
+def search_merged(con, query, k=DEFAULT_K, periods=None):
+    """★ 第 9 课第二节:关键词 + 向量的合并检索。
+
+    ═══ 为什么做成一个函数,而不是在 ask.py 里现拼 ═══
+        "怎么合"是一件可以【单独量、单独改】的事 —— 它的实现在 my_merge.merge_rank()。
+        放在检索层里,ask.py 就只多一行:
+            用合并 ? search_merged(...) : search_multi(...)
+        ★ 开关关掉时,系统【一个字节都没变】—— 这一点是本节的硬要求:
+          效果 = 改后 − 改前,而"改前"必须一字不动,否则算出来的效果是个假数。
+
+    ═══ ★★ 两个输入列表【长度不一样】,这是本质,不是 bug ═══
+        kw_ranked   只装关键词【搜到的】那些块 —— 没搜到的,在它眼里不存在,
+                    不是"排得靠后",是【看不见】。
+        vec_ranked  装库里【全部】54 块 —— 向量对每一块都有意见,
+                    哪怕意见是"你排最后一名"。
+        一句话:**关键词是"只挑我觉得像的",向量是"所有块给我排个队"。**
+
+    ═══ ★ 为什么传名次、不传分数 ═══
+        关键词的分是 BM25(负数,越小越相关),向量的分是余弦(0~1,越大越像)。
+        两种分数【量纲不同】,相加或直接比较没有任何意义 ——
+        "BM25 −3.2" 和 "余弦 0.85" 谁大?这个问题本身是错的。
+        而【名次】是两个都有的、同一把尺子。合并在名次上做,才有意义。
+
+    ═══ ⚠ 返回的 得分 是 None —— 这是诚实的做法 ═══
+        合并之后的名次,不对应任何一路的原始分数。硬塞一个"平均分"进去
+        会让下游以为那是真的 BM25 分。**宁可没有,不可假有。**
+        (查过:ask.py / score_eval.py 都不读 hits 的 得分,只有 demo 打印用。)
+    """
+    from vector_search import search_vec
+    from my_merge import merge_rank
+
+    BIG = 1_000_000                 # 库里只有几十块,给个大数 = 要全量
+    # ★ str() 一下:向量的 id 从 .npz 读出来是 numpy 的字符串类型(np.str_)。
+    #   它是 str 的子类,比较和查找都对,但会一路带着 numpy 的壳传下去 ——
+    #   到时候"这个 id 哪儿来的"就多了一层要查的东西。
+    kw_ranked  = [str(h["chunk_id"]) for h in search_multi(con, query, k=BIG, periods=periods)]
+    vec_ranked = [str(h["chunk_id"]) for h in search_vec(con, query, k=BIG, periods=periods)]
+
+    order = [str(c) for c in merge_rank(kw_ranked, vec_ranked, k=k)][:k]
+
+    known = {r[0] for r in con.execute("SELECT chunk_id FROM chunk")}
+    out, ghost = [], []
+    for cid in order:
+        row = con.execute("SELECT 期次, 页码, 文本 FROM chunk WHERE chunk_id=?",
+                          (cid,)).fetchone()
+        if row is None:
+            ghost.append(cid)       # 合并函数返回了库里没有的 id
+            continue
+        out.append({"chunk_id": cid, "期次": row[0], "页码": row[1],
+                    "得分": None, "文本": row[2]})
+
+    # ★ 合并函数是【人写的】,它可能返回库里不存在的 id。
+    #   静默跳过 = "我给你的东西你没用" 这件事没人知道。所以要出声。
+    if ghost:
+        print(f"  ⚠ merge_rank 返回了 {len(ghost)} 个库里没有的 chunk_id,已跳过:"
+              f" {ghost[:5]}")
+
+    # ★ 同理:合并后如果【比只用关键词还少】,也要出声 —— 那是"合并把东西丢了"。
+    #
+    # ⚠ 第一版我写的是 `len(out) < k and (kw + vec) >= k`,它【假警报】:
+    #   拿"关键词一个字都没搜到"的题去试 → 合并返回 0 条 → 照样报警,
+    #   喊的是"是合并时主动丢掉了吗" —— 而它一条都没丢,是【本来就没有】。
+    #   ★ 又是那个病:**报警的门槛写错了,于是"没有"被说成"丢了"。**
+    #   门槛必须对着【基准】比,不能对着一个凭空的 k:
+    #     基准 = 只用关键词本来能给出几条。比它少,才是合并的锅。
+    baseline_n = min(k, len(kw_ranked))
+    if len(out) < baseline_n:
+        print(f"  ⚠ 合并只给出 {len(out)} 条,而【只用关键词】本来能给 {baseline_n} 条 —— "
+              f"合并在丢东西,检查 my_merge.merge_rank()")
+    return out
 
 
 def check(con, source, chunks):

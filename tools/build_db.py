@@ -73,6 +73,23 @@ CREATE TABLE 综合得分 (
     期次   TEXT NOT NULL REFERENCES meta(期次),
     机场   TEXT NOT NULL,
     得分   REAL NOT NULL CHECK (得分 > 0),
+    -- ★ 第 8 课补:这个分数【是从 PDF 的哪一页抽出来的】
+    --   改之前没有这一列 —— 所以用户拿到 4.23,回不到原文去核。
+    --   而报告是给人直接拿去用的,核不了的数字凭什么信?
+    --   写法跟 chunk_id 一致(2025Q4-P18),能直接接到"来源"那一栏。
+    来源   TEXT,
+    PRIMARY KEY (期次, 机场)
+);
+
+-- ★ 第 8 课加的第一张【新】表 —— 不是改旧的,是补一样一直缺的原料
+--   它是"报告能不能推"的关键:要知道一个机场该跟谁比。
+--   数据只在 2025Q4 的四张分档页上有(版式就那一期有),所以只有 42 行。
+CREATE TABLE 机场分档 (
+    期次     TEXT NOT NULL,
+    机场     TEXT NOT NULL,
+    档位     TEXT NOT NULL,
+    行业平均 REAL,
+    来源     TEXT,
     PRIMARY KEY (期次, 机场)
 );
 
@@ -81,6 +98,7 @@ CREATE TABLE 指标得分 (
     指标   TEXT NOT NULL,
     机场   TEXT NOT NULL,
     得分   REAL NOT NULL CHECK (得分 > 0),
+    来源   TEXT,                          -- ★ 同 综合得分,第 8 课补
     PRIMARY KEY (期次, 指标, 机场)
 );
 
@@ -113,15 +131,22 @@ def build():
           int(r['一级指标数']), int(r['二级指标数']), r['口径版本']) for r in meta])
 
     scores = read_csv("capse_scores.csv")
-    con.executemany("INSERT INTO 综合得分 VALUES (?,?,?)",
-                    [(r['期次'], r['机场'], float(r['得分'])) for r in scores])
+    con.executemany("INSERT INTO 综合得分 VALUES (?,?,?,?)",
+                    [(r['期次'], r['机场'], float(r['得分']), r.get('来源chunk'))
+                     for r in scores])
+
+    tiers = read_csv("capse_tiers.csv")
+    con.executemany("INSERT INTO 机场分档 VALUES (?,?,?,?,?)",
+                    [(r['期次'], r['机场'], r['档位'], float(r['行业平均']), r['来源chunk'])
+                     for r in tiers])
 
     inds = read_csv("capse_indicators.csv")
-    con.executemany("INSERT INTO 指标得分 VALUES (?,?,?,?)",
-                    [(r['期次'], r['指标'], r['机场'], float(r['得分'])) for r in inds])
+    con.executemany("INSERT INTO 指标得分 VALUES (?,?,?,?,?)",
+                    [(r['期次'], r['指标'], r['机场'], float(r['得分']), r.get('来源chunk'))
+                     for r in inds])
 
     con.commit()
-    return con, {"meta": meta, "综合得分": scores, "指标得分": inds}
+    return con, {"meta": meta, "综合得分": scores, "指标得分": inds, "机场分档": tiers}
 
 
 def check(con, source):

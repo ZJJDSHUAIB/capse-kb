@@ -47,12 +47,29 @@ def get_period(file_name):
 
 
 def build_table():
-    """返回 [(期次, 机场, 得分), ...]"""
+    """返回 [(期次, 机场, 得分, 来源chunk), ...]
+
+    ═══ ★ 第 8 课补的回填:把【页码】从 _ 里救出来 ═══
+      改之前这一行是:
+
+          _, pairs, _ = extract(f)      # ← 第一个返回值就是页号,被 _ 丢掉了
+
+      extract() 返回的是 (页号, [(机场, 得分)], 自报平均) ——
+      **页号一直在那儿,是这个下划线把它扔了。**
+
+      后果:数据库来源只到表名,用户拿 4.23 回不到 PDF 的哪一页。
+      报告里的数字核不了 —— 而报告是给人【直接拿去用】的。
+
+      ⚠ extract 返回的 page_i 是【0 基】的(它内部打印用 page_i + 1),所以这里 +1。
+
+      → 补它几乎零成本:页码早就被算出来了,只是没存。
+    """
     rows = []
     for f in get_pdf_files():
         period = get_period(f.name)
-        _, pairs, _ = extract(f)          # extract 内部已跑过三道自检
-        rows.extend((period, airport, score) for airport, score in pairs)
+        page_i, pairs, _ = extract(f)     # ← 不再丢掉第一个
+        src = f"{period}-P{page_i + 1:02d}"     # 和 chunk_id 同一套写法
+        rows.extend((period, airport, score, src) for airport, score in pairs)
     return rows
 
 
@@ -77,7 +94,7 @@ def write_csv(rows, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', newline='', encoding='utf-8-sig') as f:   # utf-8-sig:Excel 打开不乱码
         w = csv.writer(f)
-        w.writerow(['期次', '机场', '得分'])
+        w.writerow(['期次', '机场', '得分', '来源chunk'])
         w.writerows(rows)
 
 
