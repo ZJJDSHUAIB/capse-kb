@@ -31,11 +31,45 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
-from paths import DB
+from paths import DB, PROCESSED
 
 _锁 = threading.Lock()
 _智能体 = None
 _con = None
+_会话模式 = ""          #  ★ 给页面看的那一句话:这次是存盘还是内存
+
+
+#  ══════════════════════════════════════════════════════════════════
+#  ★★★ 2026-09-23:优先用【能存盘】的那一版
+#
+#  【为什么优先它】
+#      chat.py 上写着"问过的会话记在内存里 —— 关掉就没了"。
+#      ★ 而那是个真缺口:用户问了浦东、关掉页面、明天再问「那合肥呢」—— 接不住。
+#
+#  【装不了 langgraph 怎么办 —— 退回内存版】
+#      而那【必须报出来】(见下面那句 会话模式)。
+#      ★ 因为"能跑,只是不存盘"和"能跑,而且存盘"【在页面上长得一样】——
+#        不写出来,那就是一次静默降级。
+#      ★★ 而这个项目一路在治的就是这个:机制可以降级,但要出声。
+#  ══════════════════════════════════════════════════════════════════
+会话存档 = PROCESSED / "会话存档.db"
+
+
+def _建智能体(con):
+    """返回 (智能体, 给页面看的一句话)。★ 那一句话是【必须】的。"""
+    try:
+        import sqlite3 as _s
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        from agent_langgraph import LG智能体
+        #  ⚠ check_same_thread=False —— 服务是多线程的,而 sqlite 默认不许跨线程
+        saver = SqliteSaver(_s.connect(会话存档, check_same_thread=False))
+        return (LG智能体(con, saver=saver, thread_id="网页"),
+                "★ 会话会存盘 —— 关掉页面再打开,还能接着问上一句的话题")
+    except ImportError:
+        from agent import 智能体
+        return (智能体(con),
+                "⚠ 内存版:关掉页面,会话就没了。"
+                "想让它存盘:pip install -r requirements-langgraph.txt")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -43,16 +77,16 @@ _con = None
 # ══════════════════════════════════════════════════════════════════
 def 问(q):
     """把 智能体.问() 的结果转成【页面能显示的形状】。"""
-    global _智能体, _con
+    global _智能体, _con, _会话模式
     with _锁:
         if _智能体 is None:
-            from agent import 智能体
             _con = sqlite3.connect(DB, check_same_thread=False)
-            _智能体 = 智能体(_con)
+            _智能体, _会话模式 = _建智能体(_con)
         r = _智能体.问(q)
 
     if r["结局"] == "反问":
-        return {"结局": "反问", "反问": r["反问"], "问": q}
+        return {"结局": "反问", "反问": r["反问"], "问": q,
+                "会话模式": _会话模式}
 
     期次, 机场, 指标 = r["参数"]
     工具 = []
@@ -72,7 +106,8 @@ def 问(q):
     return {"结局": "答", "问": q,
             "选中": r["选中"], "工具": 工具, "提示": 提示,
             "实际用的": {"期次": 期次, "机场": 机场, "指标": 指标},
-            "说明": r["说明"], "重做过": r.get("重做过", False)}
+            "说明": r["说明"], "重做过": r.get("重做过", False),
+            "会话模式": _会话模式}
 
 
 def _可读(v):
@@ -131,6 +166,7 @@ def _可读(v):
  <h1>CAPSE 问答</h1>
  <div class="sub">★ 这个页面不只显示答案 —— 它显示【它怎么走到那个答案的】。
   中间那几栏才是重点:它选了哪些工具、参数从哪来、补了什么、判据报了什么。</div>
+ <div id="mode" class="sub" style="margin:-14px 0 16px"></div>
  <div class="row">
   <input id="q" placeholder="比如:2025Q4 上海浦东国际机场综合得分是多少" autofocus>
   <button id="go">问</button>
@@ -148,6 +184,10 @@ async function 问(){
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({q})});
     const d=await r.json();
+    if(d.会话模式 && !$('#mode').textContent){
+      $('#mode').textContent = d.会话模式;
+      $('#mode').style.color = d.会话模式.startsWith('⚠') ? '#8a4b00' : '#0b6b3a';
+    }
     历史.push(d); 渲染();
   }catch(e){ $('#out').insertAdjacentHTML('afterbegin',
       '<div class="card err">出错了:'+e+'</div>'); }
