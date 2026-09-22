@@ -30,3 +30,12 @@ PyMuPDF==1.28.0
 #   · 调大模型 API 用的是【标准库 urllib】,不是 requests ——
 #     见 tools/llm.py 的注释:"项目里少一个依赖,别人 clone 下来就少一步装包。"
 #   · 数据库用的是标准库 sqlite3。
+#   · ★ 网页那个页面(tools/serve.py)用的是标准库 http.server —— 也不是框架。
+#   · ★★ Agent 的流程(tools/graph.py)用的是自己写的状态图 —— 四十行,零依赖。
+
+# ═══ ★★★ 可选:一份对照片的依赖(主链不需要) ═══
+#   requirements-langgraph.txt
+#   ★ 只有想跑 tools/agent_langgraph.py 那个对照才需要装它 ——
+#     那是【同一批节点函数,换个执行器】的第三版。
+#   ⚠ 它会拉 18 个包(含 langchain-core 和 langsmith)——
+#     所以它【单独一份】,不并进这里。详见那个文件开头的说明。
