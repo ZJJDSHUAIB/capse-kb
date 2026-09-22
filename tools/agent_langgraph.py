@@ -54,10 +54,39 @@ class 状态(TypedDict, total=False):
     大模型补的: Any             #  指代解析给的东西(过了校验才留)
     重做过: bool
     结局: str                  #  "答" / "反问"
+    #  ⚠⚠ 2026-09-23 补:这一行【漏了】,而它让 LangGraph 那条路接不住上文。
+    #     实测:对照从 6/6 掉到 2/6 —— 第 2 句起参数就空了。
+    #     ★ 根因:「记忆」是我往 State 里写的一个字段,而它【不在这个 schema 里】——
+    #       LangGraph 按 schema 管 State,不在里面的就【没被存下来】。
+    #     ★★ 而那暴露一件事:这份字段清单【不只是文档】,它是【真的约束】。
+    #        写 State 的人(我)漏了一个,而【没有任何东西会提醒】——
+    #        只有对照跑出来才知道。
+    #     ★★★ 教训:往 State 里写东西时,先看它在这个清单里没有。
+    记忆: dict                 #  ★ 跨轮要留的那几个字段(会话.导出() 给的那份)
 
 
 class LG智能体(图智能体):
-    """★ 只覆盖 _建图 —— 节点函数【全部继承】。那正是"换执行器"的意思。"""
+    """★ 只覆盖 _建图 —— 节点函数【全部继承】。那正是"换执行器"的意思。
+
+    ═══ ★★★ 2026-09-23:接上 Checkpointer ═══
+        【它解决的是什么】
+            chat.py 上写着"问过的会话记在内存里 —— 关掉就没了"。
+            serve.py 也一样(服务重启,会话没了)。
+            ★ 而那【不是"没做",是一个真缺口】:
+              用户问了浦东、关掉页面、再打开问「那合肥呢」—— 接不住。
+        ★★ 而 Checkpointer 让它【存进库】:关了再打开,还能接住上文。
+
+        【为什么现在才接得上】
+            之前记忆在【会话那个对象】里,Checkpointer 存的是 State ——
+            ★ 它看不见那个对象。所以昨天先把记忆挪进了 State。
+            ★★ 而那一挪,【三个执行器都受益】——
+               你看 _记忆 那个节点,它一行都没为 Checkpointer 改。
+    """
+
+    def __init__(self, con, 让模型选=True, saver=None, thread_id="默认"):
+        self._saver = saver            #  ★ None = 不持久化(和另两版一样)
+        self.thread_id = thread_id
+        super().__init__(con, 让模型选)   # ★ 父类 __init__ 会调 _建图
 
     def _建图(self):
         g = StateGraph(状态)
@@ -86,11 +115,19 @@ class LG智能体(图智能体):
         g.add_edge("重做", "筛")
         g.add_edge("筛", "完")
         g.add_edge("完", END)
-        return g.compile()
+        #  ★ 编译时把 checkpointer 带上 —— 有它,每一步都会存一份状态快照
+        return g.compile(checkpointer=self._saver)
 
     def 问(self, q):
-        """跑一遍 LangGraph 的图 —— 收尾和 图智能体 一样。"""
-        s = self.图.invoke({"问": q})
+        """跑一遍 LangGraph 的图 —— 收尾和 图智能体 一样。
+
+        ★ thread_id 就是"这是哪一段会话"。
+        ★★ 有 checkpointer 时:同一个 thread_id 再 invoke,
+           LangGraph 会【自动把上一轮的状态带进来】——
+           所以这里【不用】像 图智能体 那样自己存 self._上次。
+        """
+        s = self.图.invoke({"问": q},
+                           config={"configurable": {"thread_id": self.thread_id}})
         if s["结局"] == "反问":
             记录 = {"问": q, "结局": "反问", "反问": s["反问"]}
         else:
@@ -138,7 +175,15 @@ def main():
     con = sqlite3.connect(DB)
     甲 = 智能体(con)
     乙 = 图智能体(con)
-    丙 = LG智能体(con)
+    #  ⚠⚠ 2026-09-23:丙【要给它一个 checkpointer】——
+    #    第一版给它的是默认的 None,于是它每轮从空 State 开始,
+    #    第 2 句起参数就空了(对照掉到 2/6)。
+    #  ★ 而那正说明 Checkpointer 是【真的在管跨轮的状态】——
+    #    不接它,记忆就接不住。
+    #  ★★ 这里是内存版(InMemorySaver)—— 因为【这一份对照】不需要真存盘。
+    #     真存盘要用 SqliteSaver,而那有另一个验收:【两个不同的进程】能不能接住。
+    from langgraph.checkpoint.memory import InMemorySaver
+    丙 = LG智能体(con, saver=InMemorySaver(), thread_id="对照")
 
     print("=" * 78)
     print("  三版对照:手写 if ／ 我写的执行器 ／ LangGraph")
