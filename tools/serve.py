@@ -87,6 +87,12 @@ def 问(q):
     if r["结局"] == "反问":
         return {"结局": "反问", "反问": r["反问"], "问": q,
                 "会话模式": _会话模式}
+    #  ★★★ 2026-09-23:以前这里没有这一支 —— 于是【Web 页面上会显示"答了"而底下是空的】。
+    #    判断本来就有(在 chat.py 的展示层里),但它只覆盖终端那一条路。
+    #    ★★ 现在结局由 agent.py 统一判,这里只是【读它】。
+    if r["结局"] == "答不出":
+        return {"结局": "答不出", "问": q, "说明": r["说明"],
+                "选中": r["选中"], "会话模式": _会话模式}
 
     期次, 机场, 指标 = r["参数"]
     工具 = []
@@ -201,6 +207,15 @@ function 渲染(){
   if(d.结局==='反问'){
     h+='<div class="card"><div class="k">★ 它反问,而不是猜</div>'
       +'<div class="hint">'+esc(d.反问)+'</div></div>';
+  }else if(d.结局==='答不出'){
+    //  ★★★ 2026-09-23:以前没有这一支 —— 页面上会显示"答了"而底下是空的。
+    //    ★ 那正是这个项目一路在防的【静默】:用户看不出来系统没答上。
+    h+='<div class="card"><div class="k">⚠ 这一轮没答上来</div>'
+      +'<div class="hint">它选了干活那一步,而那一步没拿到东西。'
+      +'下面是它的原话 ——</div>'
+      +'<div class="sel">'+(d.选中||[]).map(x=>'<span class="tag">'+esc(x)+'</span>').join('')+'</div>'
+      +'<div class="hint" style="margin-top:10px">'
+      +(d.说明||[]).map(x=>'· '+esc(x)).join('<br>')+'</div></div>';
   }else{
     h+='<div class="card">';
     h+='<div class="k">它选了</div><div class="sel">'
