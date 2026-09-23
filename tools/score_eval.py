@@ -768,6 +768,28 @@ def main():
         print("  ★ 判分缓存:开(命中率会报在末尾)")
     if args.tag:
         print(f"  ★ 轮次标签:{args.tag}  →  {OUT.name}")
+        #  ═══ ★★★ 2026-09-23 加:记下【跑的是哪个代码版本】 ═══
+        #  【为什么 —— 实测踩到的,而它让一整次跑作废】
+        #      我后台跑了全量,起名「修后」—— 而那个进程是【改代码之前】启动的,
+        #      它加载的是启动那一刻的代码。
+        #    ★★ 于是我拿一份"旧代码的结果"当"修后的基线"用,还据此判断了系统行为。
+        #    ★★★ 文件名是【我起的】,不是事实 —— 而"跑的哪个版本"才是那个事实。
+        #  ★ 所以把它【打出来,而且写进结果文件】——
+        #    那是"一条测量结论必须带上它成立的条件"里最要紧的那个条件。
+        def _版本():
+            import subprocess
+            try:
+                h = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                                   cwd=str(ROOT), capture_output=True, text=True,
+                                   timeout=10)
+                d = subprocess.run(["git", "status", "--porcelain"],
+                                   cwd=str(ROOT), capture_output=True, text=True,
+                                   timeout=10)
+                v = h.stdout.strip() or "?"
+                return v + ("+改动" if d.stdout.strip() else "")
+            except Exception as e:
+                return f"读不到({type(e).__name__})"
+        print(f"  ★ 代码版本:{_版本()}   ⚠ 改了代码再跑,这个数会变 —— 对不上就别比")
     print()
 
     rows = [r for r in read_rows(EVAL_IN) if r["问题"]]
