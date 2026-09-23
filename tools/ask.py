@@ -1065,6 +1065,31 @@ def pair_period_airport(q, periods, airports_in_q):
 # ══════════════════════════════════════════════════════════════════
 平均词 = re.compile(r'平均|均值')
 
+
+def _前几名(q):
+    """问句里的「前 N 名」是几 —— ★ 认阿拉伯数字,也认【中文数字】。
+
+    【为什么 —— 诊断出来的那层原因】
+        「浦东2025Q4排第几，前三名是谁」里那个「前三名」认不出来 ——
+        因为原来用的正则 `前\\s*(\\d+)` 只认阿拉伯数字。
+      ★★ 而"认中文数字"这件事【check_eval 里早就有了】:
+         它在那儿翻「第X名」「排名X」,只是没覆盖「前N」这个写法。
+      ★★★ 所以这里【复用】它 —— 不在这一层再写一份。
+
+    ⚠ 只支持【一字】的(一到十)。「前十二名」这种要组合,现在不支持 ——
+      而现实里问"前十几名"的少,先标着。
+    """
+    from check_eval import CN_DIGIT, RANK_CN_前
+    m = RANK_CN_前.search(q or "")
+    if not m:
+        return None
+    s = m.group(1)
+    if s.isdigit():
+        return int(s)
+    if len(s) == 1 and s in CN_DIGIT:
+        return int(CN_DIGIT[s])
+    return None
+
 #  ══════════════════════════════════════════════════════════════════
 #  ★★★ 2026-09-23:「表」那一段 —— 用户要的答案【少了一整段】
 #
@@ -1243,8 +1268,20 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
                            + (f"  → PDF {'、'.join(_pdf(x) for x in _srcs)}" if _srcs else ""))
 
     # ── 前 N 名(没指定机场时才用) ─────────────────────
-    elif not airport and re.search(r'前\s*(\d+)', q):
-        k = int(re.search(r'前\s*(\d+)', q).group(1))
+    elif not airport and _前几名(q):
+        #  ═══ ★★★ 2026-09-23 修:「前三名」认不出来了 ═══
+        #  【诊断 —— 实测抓到的,原因有两层】
+        #      问「浦东2025Q4排第几，前三名是谁」→ "前三名"【没人答】
+        #      ★ ① 这一条写着 `not airport` —— 有机场就不走;
+        #          而那句【既有机场、又要全体名单】。★ 那是结构问题,归 planner。
+        #      ★★ ② 原来的正则 `前\s*(\d+)` 只认【阿拉伯数字】——
+        #          【认不出「三」】。★ 而「前三名」是最自然的写法。
+        #          实测:airport=None 时它给了【前 5 名】——
+        #          那是【最后那个兜底】的 LIMIT 5,不是"前三名"这条分支给的。
+        #
+        #  ★ 修法:用 check_eval 里【早就有的】中文数字表,扩一个「前N」的正则 ——
+        #    不在这一层再写一份。
+        k = _前几名(q)
         for p in ps:
             rows = con.execute(
                 "SELECT 排名, 机场, 得分 FROM 综合得分排名 WHERE 期次=? ORDER BY 排名 LIMIT ?",
