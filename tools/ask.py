@@ -1275,18 +1275,30 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
     #     长期的做法是【让改写那一层把说法归到这个量上】(见 docs/结论的条件.md)。
     #     先把路通了,再让说法灵活 —— 因为路不通时,说法对上了也没用。
     elif _问的是平均(q) and (airport or _档位词(con, q)):
-        _t = None if airport is None else con.execute(
-            "SELECT 档位 FROM 机场分档 WHERE 机场=? AND 期次=?",
-            (airport, ps[0] if ps else "")).fetchone()
-        if airport and not _t:
-            raise CannotAnswer(
-                f"「{airport}」在哪一档,库里没有 —— 机场分档表【只有 2025Q4 一期】。"
-                f"(问句:{q})")
-        if airport:
-            _档 = _t[0]
-        else:
-            _档 = _档位词(con, q)
+        #  ═══ ★★★ 2026-09-23 修:一处答不了,不该把【整句】拖死 ═══
+        #  【怎么发现的 —— 实测,而症状很典型】
+        #     问「分析浦东近两期表现,降了查原因,没降比同档平均」
+        #     期次抽对了 ['2025Q3','2025Q4'],而【查表整条崩了】,
+        #     报:「「上海浦东国际机场」在哪一档,库里没有 —— 机场分档表只有 2025Q4 一期」
+        #
+        #   ★ 根因:原来这里只看 ps[0](=第一个期次'2025Q3'),
+        #     分档表没有那一期 → 直接 raise → 【整个 for 循环都没跑】。
+        #   ★★ 而 2025Q3 和 2025Q4 的综合得分【库里都有】——
+        #      它本来该答出两期的分,再说明"同档平均只有 2025Q4 有"。
+        #   ★★★ 症状:一个【局部】答不了,把【整个】答案拖死 ——
+        #        而它没说"我只答不了这一部分"。这和这个项目一路在打的是同一个病。
+        #
+        #  ★ 修法:每个期次【各自找档位】;找不到的期次【记下来跳过】,
+        #     最后统一说清是哪几期没有 —— 而不是替整句判死刑。
+        _没有的期 = []
         for _p in ps:
+            _t = None if airport is None else con.execute(
+                "SELECT 档位 FROM 机场分档 WHERE 机场=? AND 期次=?",
+                (airport, _p)).fetchone()
+            if airport and not _t:
+                _没有的期.append(_p)
+                continue
+            _档 = _t[0] if airport else _档位词(con, q)
             _r = con.execute(
                 "SELECT 行业平均, 来源 FROM 机场分档 WHERE 期次=? AND 档位=? LIMIT 1",
                 (_p, _档)).fetchone()
@@ -1314,9 +1326,16 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
                     lines.append(f"{_p} {_档}的平均分是 {_均}")
                 src.append(f"capse.db / 机场分档 表,期次={_p},档位={_档}"
                            + (f"  → PDF {_pdf(_来)}" if _来 else ""))
+        #  ★ 说清【哪几期没有】—— 而不是替整句判死刑(见上面那段注释)。
+        #    ★★ 这一句是"出声":用户能看见哪部分没给,而不是整句空白。
+        if _没有的期:
+            lines.append(
+                f"⚠ {'、'.join(_没有的期)} 没有分档数据 —— 机场分档表"
+                f"【只有 2025Q4 一期】,所以那几期的同档平均算不了;"
+                f"上面其余期次的数照常给你。")
         if not lines:
             raise CannotAnswer(
-                f"「{_档}」这个档的平均分只有 2025Q4 有 —— 你问的期次没有。(问句:{q})")
+                f"你问的期次里没有分档数据 —— 机场分档表只有 2025Q4 一期。(问句:{q})")
 
     elif (_tier := find_tier(q, [r[0] for r in con.execute(
             "SELECT DISTINCT 档位 FROM 机场分档 WHERE 档位 IS NOT NULL")])):
