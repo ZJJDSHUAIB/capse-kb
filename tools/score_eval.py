@@ -505,14 +505,54 @@ def judge(row, got):
             "说明": f"子项答对 {got_subs}/{len(subs)}" + ("; " + "; ".join(miss_txt) if miss_txt else "")}
 
 
-def query_all(rows):
+def _走智能体的去向(r):
+    """★ 智能体那条路没有「去向」这个字段 —— 从它【选了什么】推出来。
+
+    ⚠ 为什么要这一步:两条路的返回形状不一样 ——
+       ask     → {"去向","答案","来源",…}
+       智能体  → {"结局","选中","结果","说明",…}
+    ★ 而判分那一整套（数字对不对、专名全不全、去向对不对）【都已经写好了】——
+      所以这里只做【形状适配】,不改判分。
+    ★★ 那正是"接线":不改判分逻辑,只换"答案从哪来"。
+    """
+    if r.get("结局") == "反问":
+        return "反问"                      # ★ 期望里没有这一档 → 会被判"去向错"
+    if r.get("结局") == "答不出":
+        return "答不出"
+    选 = r.get("选中") or []
+    if "计划" in 选 or "查表" in 选:
+        #  ★ "计划"算 SQL —— 因为目前那些多步/条件的题,期望去向都是 SQL。
+        #    ⚠ 而这是个【临时的映射】:真要有"该走检索的多步题",这里就不对了。标着。
+        return "SQL"
+    if "查原文" in 选:
+        return "检索"
+    return "?"
+
+
+def query_all(rows, 走智能体=False):
     con = sqlite3.connect(DB)
     ap, ind = load_airports(con), load_indicators(con)
     out = []
     for r in rows:
         print(f"  问 {r['题号']:>2}: {str(r['问题'])[:50]}")
         try:
-            o = ask(con, r["问题"], ap, ind)
+            if 走智能体:
+                #  ★★★ 2026-09-23 加:让 65 题也能走【agent 那条路】。
+                #  【为什么 —— 实测抓到的自欺】
+                #      planner 接在了 agent 那条路上，而评估集量的是 ask 那条路 ——
+                #      ★★ 于是「改了却没有尺子量它」。
+                #      ★★★ 那正是这一天反复出现的那个根:【两套并行的判断机制】。
+                from agent import 智能体
+                from 覆盖检查 import 答了啥
+                _a = 智能体(con)                    # ★ 每题一个新会话（单轮）
+                _r = _a.问(r["问题"])
+                o = {"去向": _走智能体的去向(_r),
+                     "答案": (答了啥({"结果": _r.get("结果") or {}}) or
+                             str(_r.get("反问") or "")).split("\n"),
+                     "来源": [], "警告": [],
+                     "备注": list(_r.get("说明") or []), "标注": []}
+            else:
+                o = ask(con, r["问题"], ap, ind)
             rec = {"去向": o.get("去向", "?"), "系统答": "\n".join(o.get("答案") or []),
                    #  ★★★ 模型答 = 【只有模型写的那一段】,不含代码生成的多版本说明。
                    #     为什么要单独存:见 ask.py 里那段注释 ——
@@ -681,6 +721,8 @@ def main():
     ap.add_argument("--no-cache", action="store_true",
                     help="★ 第11课:不用判分缓存 —— 量【判分自己稳不稳】时必须加,"
                          "否则同一份答案全命中缓存,读到的稳定是假的")
+    ap.add_argument("--走agent", action="store_true",
+                    help="答案从【智能体那条路】拿，而不是 ask —— ★ 因为 planner 接在那条路上")
     ap.add_argument("--tag", default="",
                     help="★ 第9课:给这一轮起个名,结果另存成 评估集_跑分_<tag>.json")
     args = ap.parse_args()
@@ -734,7 +776,7 @@ def main():
         print(f"从 {OUT.name} 读回 {len(gots)} 条系统答案,不重跑。\n")
     else:
         print(f"跑 {len(rows)} 道…\n")
-        gots = query_all(rows)
+        gots = query_all(rows, 走智能体=getattr(a, "走agent", False))
         OUT.write_text(json.dumps(gots, ensure_ascii=False, indent=1), encoding="utf-8")
 
     res = report(rows, gots)
