@@ -1052,6 +1052,38 @@ def pair_period_airport(q, periods, airports_in_q):
     return pairs if len({t for t in pairs}) == len(pairs) else None
 
 
+#  ══════════════════════════════════════════════════════════════════
+#  ★★★ 2026-09-23:「平均」这个量的两个小助手
+#
+#  ⚠⚠ 平均词 那一个【是临时的】,必须写清 ——
+#      它是【一个最小词表】:只认"平均"和"均值"。
+#      ★ 而换个说法("同档水平""这一类的均值")它就认不出 ——
+#        那正是这个项目一路在治的"补语言现象永远补不完"。
+#      ★★ 长久之计是【让改写那一层把说法归到这个量上】(大模型干这个)。
+#          先通路,再让说法灵活 —— 因为★路不通时,说法对上了也没用。
+#      ★★★ 所以这一条要能被替换掉,而不是越补越长。
+# ══════════════════════════════════════════════════════════════════
+平均词 = re.compile(r'平均|均值')
+
+
+def _问的是平均(q):
+    """★ 临时的最小词表 —— 见上面那段注释。它该被"改写"那一层替换掉。"""
+    return bool(平均词.search(q or ""))
+
+
+def _档位词(con, q):
+    """问句里有没有某个档位词 —— ★ 复用 find_tier,不另写判据。
+
+    ⚠ 第一版写的是 `from route import find_tier` —— 而它【就在本文件里】
+      (ask.py:889),于是 ImportError。★ 而这说明一件事:
+      加一个新的东西时，要先确认【它是不是已经有了】——
+      而"已经有了"和"在哪个文件里"，是两件不同的事。
+    """
+    档们 = [r[0] for r in con.execute(
+        "SELECT DISTINCT 档位 FROM 机场分档 WHERE 档位 IS NOT NULL")]
+    return find_tier(q, 档们)
+
+
 def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
                indicators=None, airports=None):
     """数值型。返回 (答案行列表, 来源列表)。
@@ -1155,6 +1187,66 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
             if rows:
                 lines.append(f"{p} 前 {k} 名:" + ";".join(f"第{r}名 {a} {s}" for r, a, s in rows))
                 src.append(f"capse.db / 综合得分排名 视图,期次={p}(视图,不存数据)")
+
+    #  ═══ ★★★ 2026-09-23:「平均」是一个【能查的量】,而它一直没接进来 ═══
+    #
+    #  【为什么加它 —— 实测出来的缺口】
+    #      拿五种问法去问"同档平均",【0 种答对】:
+    #        「浦东和同档平均比怎么样」  → 答了"浦东 4.23,排名 5/42"  ★ 答非所问
+    #        「浦东所在档位的平均分是多少」→ 拒答(认不出指标)
+    #        「4000万级以上档位平均分是多少」→ 答了"那一档所有机场的分数" ★ 答非所问
+    #        「上海浦东比行业平均高多少」  → 拒答(没有期次)
+    #        「哪些机场高于同档平均」      → 拒答(认不出指标)
+    #
+    #      ★ 而那个数【库里有】:机场分档.行业平均,四个档各一个值(4.05/4.09/4.11/4.13)。
+    #      ★★ 所以根因是:【数据在,而没有一条路通向它】。
+    #
+    #  【为什么单独一条分支,而不是塞进档位那一条】
+    #      档位那条答的是"这一档【有哪些机场】",而这条答的是"这一档【平均多少】"——
+    #      ★ 两个不同的问题,不该走同一条。
+    #
+    #  ⚠ 判据(问的是不是"平均")【先用一个最小词表】——
+    #     ★★ 而那【不是长久之计】:"均值""同档平均"这些说法会不断冒出来。
+    #     长期的做法是【让改写那一层把说法归到这个量上】(见 docs/结论的条件.md)。
+    #     先把路通了,再让说法灵活 —— 因为路不通时,说法对上了也没用。
+    elif _问的是平均(q) and (airport or _档位词(con, q)):
+        _t = None if airport is None else con.execute(
+            "SELECT 档位 FROM 机场分档 WHERE 机场=? AND 期次=?",
+            (airport, ps[0] if ps else "")).fetchone()
+        if airport and not _t:
+            raise CannotAnswer(
+                f"「{airport}」在哪一档,库里没有 —— 机场分档表【只有 2025Q4 一期】。"
+                f"(问句:{q})")
+        if airport:
+            _档 = _t[0]
+        else:
+            _档 = _档位词(con, q)
+        for _p in ps:
+            _r = con.execute(
+                "SELECT 行业平均, 来源 FROM 机场分档 WHERE 期次=? AND 档位=? LIMIT 1",
+                (_p, _档)).fetchone()
+            if _r:
+                _均, _来 = _r
+                if airport:
+                    _自己 = con.execute(
+                        "SELECT 得分 FROM 综合得分 WHERE 期次=? AND 机场=?",
+                        (_p, airport)).fetchone()
+                    if _自己:
+                        _差 = round(_自己[0] - _均, 2)
+                        lines.append(
+                            f"{_p} {airport}:综合得分 {_自己[0]};"
+                            f"它所在的【{_档}】平均 {_均} —— "
+                            f"比同档平均【{'高' if _差 > 0 else '低' if _差 < 0 else '持平'} "
+                            f"{abs(_差)}】")
+                    else:
+                        lines.append(f"{_p} {_档}的平均分是 {_均}")
+                else:
+                    lines.append(f"{_p} {_档}的平均分是 {_均}")
+                src.append(f"capse.db / 机场分档 表,期次={_p},档位={_档}"
+                           + (f"  → PDF {_pdf(_来)}" if _来 else ""))
+        if not lines:
+            raise CannotAnswer(
+                f"「{_档}」这个档的平均分只有 2025Q4 有 —— 你问的期次没有。(问句:{q})")
 
     elif (_tier := find_tier(q, [r[0] for r in con.execute(
             "SELECT DISTINCT 档位 FROM 机场分档 WHERE 档位 IS NOT NULL")])):
