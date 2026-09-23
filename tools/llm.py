@@ -48,6 +48,31 @@ class LLMError(RuntimeError):
     【模型说不知道】和【模型没连上】,这两件事要说给用户不同的话。"""
 
 
+#  ═══ ★★★ 2026-09-23 加:调用计数(给 Agent 过程指标用) ═══
+#  【为什么 —— 用户给的那份建议里最同意的一条】
+#     「证明 Agent 不仅能回答,还【能正确执行任务】」——
+#     而"执行"是有代价的:几次调用、多少 token、几秒。
+#     ★ 而这三样【原来一个都没记】。
+#
+#  【★★ 而 Token 这件事有意思:它【本来就在响应里】,只是被扔了】
+#     原来的代码:`return data["choices"][0]["message"]["content"]`
+#     ★★ 而 data 里还有 `usage: {prompt_tokens, completion_tokens}` ——
+#        一个字没取。
+#     ★★★ 所以不是"拿不到",是"没接"。而"没接"的东西,
+#         量的时候才会发现它不在了。
+#
+#  ⚠ 用模块级累加器,而不是让 chat() 多返回一个值 ——
+#    因为 chat() 的调用点【遍布全项目】,改返回值会动一圈。
+#    而累加器【零侵入】:调用方一个字不用改。
+统计 = {"调用次数": 0, "输入token": 0, "输出token": 0, "总秒数": 0.0}
+
+
+def 清零():
+    """★ 量之前先清零 —— 不然上一轮的账会混进来。"""
+    for k in 统计:
+        统计[k] = 0 if k != "总秒数" else 0.0
+
+
 def chat(prompt, system=None, max_tokens=300, temperature=0):
     """发一次对话请求,返回模型回复的纯文本。"""
     _load_env()
@@ -92,6 +117,8 @@ def chat(prompt, system=None, max_tokens=300, temperature=0):
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
+    import time as _t
+    _t0 = _t.time()
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             data = json.loads(r.read().decode("utf-8"))
@@ -100,6 +127,17 @@ def chat(prompt, system=None, max_tokens=300, temperature=0):
         raise LLMError(f"接口返回 {e.code}:{detail}") from e
     except Exception as e:
         raise LLMError(f"连不上:{e}") from e
+
+    #  ★★★ 记账 —— 而它【不吞掉任何东西】:usage 有就记,没有就记 0
+    #    ⚠ 而"没有 usage"这件事【要说出来】,不能让 token 悄悄是 0:
+    #      那样算出来的成本会偏低,而你【看不出来】。
+    统计["调用次数"] += 1
+    统计["总秒数"] += _t.time() - _t0
+    _u = data.get("usage") or {}
+    if not _u:
+        统计["★ 这次没有 usage"] = 统计.get("★ 这次没有 usage", 0) + 1
+    统计["输入token"] += _u.get("prompt_tokens", 0)
+    统计["输出token"] += _u.get("completion_tokens", 0)
 
     try:
         return data["choices"][0]["message"]["content"].strip()
