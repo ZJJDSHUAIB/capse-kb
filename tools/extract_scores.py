@@ -32,7 +32,7 @@ r"""
     ② 分数是降序                  → 顺序没乱位
     ③ 实算平均 == 报告自报平均    → 分数本身取对了(独立信源,最强)
 
-用法:  python D:/capse-kb/tools/extract_scores.py
+用法:  python tools/extract_scores.py
 """
 import sys, io, os, re, glob
 import fitz

@@ -5,7 +5,7 @@
 只做侦察,不做提取。
 目的:在写提取代码之前,先搞清楚 10 份报告的结构差异在哪。
 
-用法:  python D:/capse-kb/tools/probe_pages.py
+用法:  python tools/probe_pages.py
 """
 import sys, io, glob, os, re, fitz
 from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT

@@ -7,7 +7,7 @@
     长表让"对比"必须显式执行,而那次执行就是你插口径检查的地方。
     而且期次之间口径不同(6+31 → 7+28),宽表的列名装不下这件事。
 
-用法:  python D:/capse-kb/tools/build_scores_table.py
+用法:  python tools/build_scores_table.py
 """
 import sys
 import io
