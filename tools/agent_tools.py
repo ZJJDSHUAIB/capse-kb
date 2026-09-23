@@ -542,7 +542,20 @@ def _查表(con, q, 期次, 机场, 指标, 指标已定=False):
       让上面那条已经写好的路自己生效。
     """
     from ask import answer_sql
-    from route import load_airports, load_indicators, 固定答案名
+    from route import load_airports, load_indicators, 固定答案名, find_airports
+    #  ═══ ★★★ 2026-09-23:补传 airports_in_q —— 两条调用路【一条传了一条没传】 ═══
+    #  【怎么发现的 —— 实测:「浦东和虹桥2025Q4谁高，低的那家差在哪」只答了一行】
+    #      ask.py:1679 那条路【传了】:
+    #          answer_sql(…, find_airports(con, q, airports), …)
+    #      而这里(Web 和 Agent 走的这条)【没传】——
+    #          answer_sql(…, airports=…, indicators=…)   ← 少了那一个位置参数 → None
+    #    ★★ 于是 answer_sql 里 `targets = airports_in_q or [airport]` 退成【一个机场】,
+    #       而那一段的注释里明明写着「改之前只查 airport(一个)」,还举了例子。
+    #       → ★★★ 第 5 次「只改一半」:同一个参数,一条路传了,另一条路没传。
+    #    ★ 而那条没传的路,正是【用户实际会走的】——
+    #      和今天上午「尾段匹配只在复数版里」一模一样。
+    #
+    #  ⚠ 复数机场从【同一个 q】算 —— 不另存一份,免得两条路的判定分叉。
     if 指标已定 and not 指标:
         指标 = 固定答案名[0]              # ★ 「综合得分」—— 复用已有机制,不新写
     #  ═══ ⚠⚠ 这道守卫第一版写的是 `if not 期次 or not 机场` —— 写错了 ═══
@@ -575,8 +588,9 @@ def _查表(con, q, 期次, 机场, 指标, 指标已定=False):
     #       接住并说清,上层和用户都能看见。
     try:
         答案, 来源 = answer_sql(con, q, set(期次), 机场, 指标,
-                                airports=load_airports(con),
-                                indicators=load_indicators(con))
+                                find_airports(con, q, load_airports(con)),
+                                indicators=load_indicators(con),
+                                airports=load_airports(con))
     except Exception as e:
         #  ★ 把握用"工具答不了" —— 和"没找到"分开:
         #    "没找到"是查了没有;"工具答不了"是【这一步压根没能执行】。
