@@ -740,6 +740,51 @@ def known_names(con, indicators):
 #   题 57 的第二问「为什么第6页没进库」—— 这个系统答不了那个。
 #   它只回答"报告里写了什么";**"我内部怎么切的"不是报告内容,是我的实现细节。**
 META_Q = re.compile(r'进库|入库|切片|没进|未入库|不在库里|收录|没收录')
+
+
+def 该拒答吗(con, q, airports, indicators, periods=()):
+    """★ 「该不该拒答」的三道闸 —— 返回 理由(字符串),不该拒就返回 None。
+
+    ═══ ★★★ 为什么把它抽出来 —— 逐道对 ask 和 agent，差出来的 ═══
+        这三道闸【原来只装在 ask 那条路上】，而 agent 那条路一道都没有。
+        ★ 后果（实测）:
+            题54「浦东去年考了多少分」
+              ask   → 拒答(句子里没写期次,不猜)
+              agent → ★★ 答了「2025Q4 上海浦东国际机场:综合得分 4.23」—— 它猜了
+            题30「2025Q4上海浦东国际机场的靠桥率得分是多少」
+              ask   → 拒答(库里没有"靠桥率"这个指标)
+              agent → ★ 拿别的顶上或者答了别的
+        ★★ 同一个问题("该不该拒答"),一条路有闸、另一条路没有 ——
+           那正是这一天反复出现的【两套并行的判断机制】。
+        ★★★ 所以抽出来,两条路【共用】—— 不各写一份。
+
+    ⚠ 而它【和走哪条路无关】,所以要放在路由【之前】——
+      见下面 ask() 里那段注释(题57 走检索,装在 SQL 里就漏了)。
+    """
+    _known = known_names(con, indicators)
+    _um = unknown_metric(q, _known)
+    _ua = unknown_airport(q, find_airports(con, q, airports), airports)
+    _mq = META_Q.search(q)
+    if not (_um or _ua or _mq):
+        return None
+    if _mq:
+        return ("问题里询问的是【系统内部怎么处理的】—— "
+                "而我只能回答报告里写了什么,回答不了我自己怎么切的。"
+                "建议拆成两个问题。")
+    if _um:
+        #  ⚠⚠ 这句话原来写的是:"2025Q4 没有「X」这个指标 —— …"
+        #     实测(2026-09-22,题36)发现它有两处不对:
+        #     ① 期次是【写死的】,而用户可能问的是别的期。
+        #     ② 说得像"别的期有,只是这期没有"。
+        #        而真相往往是【库里压根没存这个指标的分数】(比如靠桥率)。
+        #     → 所以改成:不带期次的说法,并把用户问的期次【照原样回显】。
+        _per = "/".join(sorted(periods)) if periods else ""
+        return ("我没有「" + _um + "」的数据"
+                + ("(你问的是 " + _per + ")" if _per else "")
+                + " —— 库里没有这个指标的分数,我不猜。"
+                + "  ".join(hint_metric(con, _um, _known)))
+    return (f"「{_ua}」不在库里 —— 我不拿别的机场替你答。"
+            + "  ".join(hint_airport(con, _ua, airports)))
 AIRPORT_LIKE = re.compile(r'([\u4e00-\u9fff]{2,6})机场')
 #  泛指,不是具体机场名 —— 这些不该被当成"认不出的机场"
 #  ⚠⚠ 2026-09-22:原来这里是一张【枚举表】,而枚举永远漏 ——
@@ -1637,38 +1682,12 @@ def ask(con, q, airports, indicators):
     #   ★ **同一条规则只装在一条路上 —— 这是这一课第三次了**
     #     (前两次:年度报告规则只装在数值那条路、check_eval 的 [:160] 只在一处截断)。
     #   放在这里 —— 两条路都盖到。
-    _known = known_names(con, indicators)
-    _um = unknown_metric(q, _known)
-    _ua = unknown_airport(q, find_airports(con, q, airports), airports)
-    _mq = META_Q.search(q)
-    if _um or _ua or _mq:
-        if _mq:
-            _why = ("问题里询问的是【系统内部怎么处理的】—— "
-                    "而我只能回答报告里写了什么,回答不了我自己怎么切的。"
-                    "建议拆成两个问题。")
-        elif _um:
-            #  ⚠⚠ 这句话原来写的是:"2025Q4 没有「X」这个指标 —— …"
-            #     实测(2026-09-22,题36)发现它有两处不对:
-            #
-            #     ① 期次是【写死的】,而用户可能问的是别的期。
-            #        题36 问的是"2024Q1…的靠桥率得分",它答的是"2025Q4 没有"。
-            #        ★ 而那道题的期望就是"拒答" —— 所以【判分给了对】,
-            #          一个说错话的回答被判成了满分。
-            #        ★★ 这是"用户看得见、判分看不见"的那一类错。
-            #
-            #     ② 说得像"别的期有,只是这期没有"。
-            #        而真相往往是【库里压根没存这个指标的分数】(比如靠桥率)。
-            #
-            #     → 所以改成:不带期次的说法,并把用户问的期次【照原样回显】。
-            _per = "/".join(sorted(periods)) if periods else ""
-            _why = ("我没有「" + _um + "」的数据"
-                    + ("(你问的是 " + _per + ")" if _per else "")
-                    + " —— 库里没有这个指标的分数,我不猜。"
-                    + "  ".join(hint_metric(con, _um, _known)))
-        else:
-            _why = (f"「{_ua}」不在库里 —— 我不拿别的机场替你答。"
-                    + "  ".join(hint_airport(con, _ua, airports)))
-        return {"问题": q, "去向": "拒答", "答案": [_why], "来源": [],
+    #  ═══ ★★★ 2026-09-23 改:这三道闸【抽成函数了】 ═══
+    #    【为什么 —— agent 那条路上一道都没有,而抽出来两条路就能共用】
+    #    ★ 见 该拒答吗() 上面那段注释。
+    _拒 = 该拒答吗(con, q, airports, indicators, periods)
+    if _拒:
+        return {"问题": q, "去向": "拒答", "答案": [_拒], "来源": [],
                 "标注": [], "警告": [], "备注": []}
 
     where, flag, why = route(con, q, airports, indicators)
