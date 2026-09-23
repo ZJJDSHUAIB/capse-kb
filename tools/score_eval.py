@@ -776,7 +776,7 @@ def main():
         print(f"从 {OUT.name} 读回 {len(gots)} 条系统答案,不重跑。\n")
     else:
         print(f"跑 {len(rows)} 道…\n")
-        gots = query_all(rows, 走智能体=getattr(a, "走agent", False))
+        gots = query_all(rows, 走智能体=getattr(ap, "走agent", False))
         OUT.write_text(json.dumps(gots, ensure_ascii=False, indent=1), encoding="utf-8")
 
     res = report(rows, gots)
