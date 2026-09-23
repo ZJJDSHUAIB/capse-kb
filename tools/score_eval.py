@@ -546,10 +546,24 @@ def query_all(rows, 走智能体=False):
                 from 覆盖检查 import 答了啥
                 _a = 智能体(con)                    # ★ 每题一个新会话（单轮）
                 _r = _a.问(r["问题"])
+                #  ═══ ★★★ 2026-09-23 修:来源【不能写死成空】 ═══
+                #  【怎么发现的 —— 而它一次毁掉一整片题】
+                #      第一版这里写的是 `"来源": []` —— 硬写空。
+                #      ★ 而 score_eval 的【证据核对】看的就是"来源"那一栏:
+                #        期望 chunk=2024Q2-P07,系统答里也有 (出处:2024Q2-P07) ——
+                #        ★★ 而"来源"是空的 → 判【证据没命中】→ 得分 0.00。
+                #      ★★★ 症状:题38~42 那一片"叙述·检索"全 0.00,
+                #            而它们【明明答对了】(六个一级指标一个不缺)。
+                #      ★★★★ 所以那不是系统的问题,是【我在适配层写死了一个空】。
+                #   ★ 修:来源从 agent 的结果里【抽出来】——
+                #     每个工具都带"来源",拼起来就是了。
+                _来源 = [s for v in (_r.get("结果") or {}).values()
+                        if isinstance(v, dict)
+                        for s in (v.get("来源") or [])]
                 o = {"去向": _走智能体的去向(_r),
                      "答案": (答了啥({"结果": _r.get("结果") or {}}) or
                              str(_r.get("反问") or "")).split("\n"),
-                     "来源": [], "警告": [],
+                     "来源": _来源, "警告": [],
                      "备注": list(_r.get("说明") or []), "标注": []}
             else:
                 o = ask(con, r["问题"], ap, ind)
@@ -798,7 +812,19 @@ def main():
         print(f"从 {OUT.name} 读回 {len(gots)} 条系统答案,不重跑。\n")
     else:
         print(f"跑 {len(rows)} 道…\n")
-        gots = query_all(rows, 走智能体=getattr(ap, "走agent", False))
+        #  ═══ ★★★ 2026-09-23 修:--走agent 【从来没生效过】 ═══
+        #  【怎么发现的 —— 而它骗了我三次跑】
+        #      原来写的是 `getattr(ap, "走agent", False)` ——
+        #      ★ 而 `ap` 是【那个 ArgumentParser 对象】,不是 parse_args() 的返回
+        #        (返回在 734 行,叫 `args`)。
+        #      ★★ 于是 getattr 取不到属性 → 被第三个参数的默认值兜住 → 【永远 False】。
+        #         ★★★ 所以 `--走agent` 一次都没生效过 ——
+        #            我跑的三次全量【全是 ask 那条路】,而我拿它们当"agent 的基线"用。
+        #      ★★★★ 而那【看起来完全正常】:不报错,出的数也合理。
+        #  ★ 修:直接取属性,【不给默认值】——
+        #    名字写错就该 AttributeError,而不是静默变成 False。
+        #    ★★ 那正是这一天的教训:「一个兜底会把失败变成静默降级」。
+        gots = query_all(rows, 走智能体=args.走agent)
         OUT.write_text(json.dumps(gots, ensure_ascii=False, indent=1), encoding="utf-8")
 
     res = report(rows, gots)
