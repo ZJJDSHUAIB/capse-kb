@@ -1,0 +1,36 @@
+# CAPSE 知识库 · 【可选】FastAPI 那一版服务的依赖 —— 主链不需要它
+
+# ═══ ★★★ 这一份是给谁用的 ═══
+#   只给 tools/serve_api.py 用 —— 那是【对照版】,不是主链。
+#
+#       tools/serve.py       标准库 http.server   ← 主链(零依赖,clone 就能跑)
+#       tools/serve_api.py   FastAPI              ← ★ 只这一个需要本文件
+#
+# ═══ ⚠ 为什么单独一份,不并进 requirements.txt ═══
+#   和 requirements-langgraph.txt 同一个理由:
+#   主链的取舍是「少一个依赖,别人就少一步装包」(见 requirements.txt 开头)。
+#   ★ 一个【对照版】不该把那个取舍抹掉。
+#
+# ═══ ★ 实测:其实只多一个包 ═══
+#   装之前查过这台机器:
+#       ❌ 没装  fastapi
+#       ✅ 已装  uvicorn / pydantic / httpx / anyio   ← ★ 这四个本来就在
+#   ★★ 所以"换 FastAPI 要拉一堆包"这个担心,在这里【不成立】。
+#      (langgraph 那份要拉 18 个;这一份只多 1 个。)
+#
+# ═══ 那它换来了什么 ═══
+#   ① 请求校验      写错字段直接 422,而不是拿到空串往下走
+#   ② 异步          asyncio.to_thread —— 等 DeepSeek 的时候能接别的请求
+#   ③ 自动文档      访问 /docs,一张能点着试的接口文档
+#   ④ 每会话独立    不再"全服务器共用一个智能体"
+#   ★ 以及那个"锁要不要拆"的答案:【拆锁的正确方式不是不要锁,
+#     是把共享的东西变成不共享的】—— 每会话一条 sqlite 连接。
+#   ⚠ 而流式输出这一版【没做】,理由写在 serve_api.py 开头(不适合,不硬做)。
+#
+# ═══ 怎么装 ═══
+#   pip install -r requirements-api.txt
+
+#  ⚠ 这两个版本是【这台机器上实测跑通的】—— 和 requirements.txt 一样钉死。
+#  不钉的话别人可能装到不兼容的新版,而那种错不在代码里,在环境里。
+fastapi==0.141.1
+uvicorn==0.52.1
