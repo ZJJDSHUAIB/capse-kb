@@ -186,6 +186,7 @@ class 会话表:
 
 _会话 = None
 _会话模式 = ""
+_不挪线程池 = False      # ★ 只给 --不挪线程池 用,平时 False
 
 
 #  ══════════════════════════════════════════════════════════════════
@@ -265,6 +266,18 @@ async def ask(请求: 提问):
             ⚠ 如实说:这一版是后者没做。
     """
     try:
+        #  ═══ ★★★ 就是这一个词,而它是这一版全部的秘密 ═══
+        #      有 to_thread → 那段阻塞的活儿被挪到【线程池】,事件循环空出来接下一个
+        #      没 to_thread → 事件循环被【卡住】,下一个请求只能等
+        #  【★ 加了个开关,专门用来【改坏对照】】
+        #      --不挪线程池  → 退回"直接在事件循环里跑那段同步代码"
+        #      ★ 而这个项目一路最狠的一招就是「故意改坏,看掉多少」——
+        #        掉不动 = 那个机制是死的;掉得动 = 它真的在起作用。
+        #      ⚠ 而这一个开关的价值【不在"证明它有用"】——
+        #        那太显然了。★ 它的价值在【量出幅度】:4 个并发差多少秒。
+        #        幅度才是信息,"有用"不是。
+        if _不挪线程池:
+            return _问一句(请求.q, 请求.会话id)
         return await asyncio.to_thread(_问一句, 请求.q, 请求.会话id)
     except Exception as e:
         #  ★ 出错要说出来,不是悄悄不出结果 —— 见 serve.py 那段注释
@@ -284,15 +297,20 @@ def main():
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--串行", action="store_true",
                     help="★ 对照:退回全局一个智能体 + 一把锁(和 serve.py 行为对齐)")
+    ap.add_argument("--不挪线程池", action="store_true",
+                    help="★★ 改坏对照:把 asyncio.to_thread 去掉 —— 让阻塞的活儿【卡住事件循环】")
     a = ap.parse_args()
 
+    global _不挪线程池
+    _不挪线程池 = a.不挪线程池
     _会话 = 会话表(串行=a.串行)
     con = sqlite3.connect(DB, check_same_thread=False)
     _会话模式 = ("★ 会话会存盘" if _有langgraph() else
                  "⚠ 内存版:关掉就没了。想存盘:pip install -r requirements-langgraph.txt")
 
     print(f"★ 接口文档  http://127.0.0.1:{a.port}/docs")
-    print(f"★ 模式      {'串行(对照)' if a.串行 else '每会话独立'}")
+    print(f"★ 模式      {'串行(对照)' if a.串行 else '每会话独立'}"
+          f"{'  ★★ 不挪线程池(改坏对照)' if a.不挪线程池 else ''}")
     print(f"★ {_会话模式}")
 
     import uvicorn
