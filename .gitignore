@@ -60,3 +60,8 @@ docs/评估集_判分缓存.json
 docs/评估集_跑分*.json
 docs/agent跑分*.json
 api_run.log
+
+# 跑分/调试日志 —— 派生物,不进仓库
+*.log
+*.bak-*
+*.bak
