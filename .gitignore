@@ -65,3 +65,13 @@ api_run.log
 *.log
 *.bak-*
 *.bak
+docs/agent指标.json
+docs/内部/agent指标.json
+
+# ★ 过程记录里【不该出现在 GitHub 上】的几个 —— 本地留着,仓库不要
+#   理由:文件名/内容本身就在说"这是为面试准备的"。
+docs/内部/面试素材_*.md
+docs/内部/learning-log.md
+docs/内部/已知问题分类.md
+docs/内部/结论的条件.md
+docs/内部/设计文档.md

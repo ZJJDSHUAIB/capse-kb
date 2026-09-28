@@ -180,7 +180,9 @@ def main():
 
     if a.只跑:
         return
-    out = DOCS / "agent指标.json"
+    #  ⚠ 2026-09-28:它跟着【过程记录】搬进了 docs/内部/ ——
+    #    见 docs/内部/说明.md。搬文件时【忘了改这里】,会 FileNotFoundError。
+    out = DOCS / "内部" / "agent指标.json"
     out.write_text(json.dumps(出, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n  ★ 明细写到 {out.name}")
 

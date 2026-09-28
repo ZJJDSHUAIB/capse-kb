@@ -189,11 +189,11 @@ def main():
 
     allrows = A + B + C
     print(f"  A {len(A)} 道 / B {len(B)} 道 / C {len(C)} 道  合计 {len(allrows)}")
-    DOCS / "_挑战集.json".write_text(
+    DOCS / "挑战集.json".write_text(
         json.dumps(allrows, ensure_ascii=False, indent=1), encoding="utf-8")
     for r in allrows:
         print(f"  [{r['类别']}] {r['问题']}")
-    print(f"\n写到 docs\\_挑战集.json")
+    print(f"\n写到 docs\\挑战集.json")
 
 
 if __name__ == "__main__":

@@ -33,7 +33,8 @@ from paths import ROOT, DATA, PROCESSED, DOCS, DB, OUTPUT
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-SRC = DOCS / "_挑战集.json"
+#  ⚠ 2026-09-28:原名 `_挑战集.json`(下划线有"临时"味),改成 `挑战集.json`。
+SRC = DOCS / "挑战集.json"
 SPOKEN = ("拒答", "检索·0条")
 
 
