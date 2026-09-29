@@ -238,16 +238,30 @@ def main():
     L.append("=" * 96)
     L.append("  四、分歧清单 —— ★ 这一段是你写合并规则的依据")
     L.append("=" * 96)
-    diff_top = [(no, w, a, b) for no, w, _, _, a, b, _, _ in single if a[0] != b[0]]
+    #  ═══ ⚠⚠⚠ 2026-09-29 修:某一路【一条都没命中】时,取 [0] 会崩 ═══
+    #  【怎么发现的 —— 用户跑出来的】
+    #      IndexError: list index out of range  (line 241)
+    #    ★ 根因:题 51 的关键词结果是【空列表 []】—— 那一路一条都没捞到。
+    #      而这里直接取 a[0] / b[0],空列表没有第 0 个。
+    #    ★★ 这个 bug 的形状:【这把尺子从写出来到现在,第一次遇到"某一路 0 条"】。
+    #      而"0 条"不是异常 —— 它是检索的正常输出(第 6 课就给它单独设了去向「检索·0条」)。
+    #    ★★★ 所以:凡是对"检索结果列表"取下标的地方,都要先问"它可能是空的吗"。
+    #      答:会。所以下面统一走 _首()。
+    def _首(x):
+        return x[0] if x else "（0 条）"
+
+    diff_top = [(no, w, a, b) for no, w, _, _, a, b, _, _ in single
+                if _首(a) != _首(b)]
     L.append("")
     L.append(f"  ① 两条路的【第一名不是同一页】的题:{len(diff_top)}/{n} 道")
-    who_kw = sum(1 for _, w, a, b in diff_top if a[0] == w)
-    who_vc = sum(1 for _, w, a, b in diff_top if b[0] == w)
+    who_kw = sum(1 for _, w, a, b in diff_top if _首(a) == w)
+    who_vc = sum(1 for _, w, a, b in diff_top if _首(b) == w)
     L.append(f"       其中答案键那一页 = 关键词的第1名 : {who_kw} 道")
     L.append(f"                        = 向量的第1名   : {who_vc} 道")
     L.append(f"                        = 谁的第1名都不是 : {len(diff_top) - who_kw - who_vc} 道")
+    L.append("       ⚠ 其中「（0 条）」= 那一路一条都没命中 —— 不是「排第几」的问题,是「没找到」")
     for no, w, a, b in diff_top:
-        L.append(f"         题 {no:>3}  要 {w:<14} 关键词第1={a[0]}   向量第1={b[0]}")
+        L.append(f"         题 {no:>3}  要 {w:<14} 关键词第1={_首(a)}   向量第1={_首(b)}")
 
     flip = [(no, w, a, b) for no, w, _, _, a, b, _, _ in single
             if (rank(a, w) is None or rank(a, w) > K) != (rank(b, w) is None or rank(b, w) > K)]
