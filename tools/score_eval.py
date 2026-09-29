@@ -746,6 +746,9 @@ def main():
                          "否则同一份答案全命中缓存,读到的稳定是假的")
     ap.add_argument("--走agent", action="store_true",
                     help="答案从【智能体那条路】拿，而不是 ask —— ★ 因为 planner 接在那条路上")
+    ap.add_argument("--说人话", action="store_true",
+                    help="★ 把事实交给大模型组织语言(数字锁死成占位符);"
+                         "默认关 —— 见 ask.py 的 USE_说人话")
     ap.add_argument("--tag", default="",
                     help="★ 第9课:给这一轮起个名,结果另存成 评估集_跑分_<tag>.json")
     args = ap.parse_args()
@@ -784,6 +787,15 @@ def main():
         print("  ★ 重试循环:开(诊断→动作;规则在 ask.RETRY_PLAN)")
     else:
         print("  ★ 重试循环:关(生成一次就完事)")
+    #  ★ 2026-09-30:说人话开关
+    #  ⚠ 第一版写成 if getattr(a, ...) —— ★ 变量名是 args 不是 a,
+    #    而且我把它插到了上面那个 if/else 的中间,【抢走了 retry 的 else】。
+    #    两个错叠在一起 → NameError。
+    if getattr(args, "说人话", False):
+        _ask_mod.USE_说人话 = True
+        print("  ★ 说人话:开(事实 → 大模型组织语言,数字锁死成占位符)")
+    else:
+        print("  ★ 说人话:关(答案 = 代码拼的)")
     if args.no_cache:
         _NO_CACHE = True
         print("  ★ 判分缓存:【关】—— 每次都真判,量判分稳定性时必须这样")

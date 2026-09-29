@@ -87,6 +87,12 @@ USE_MERGE = False
 #     开了 → 分数是"回答"的分数,但那才是真的 —— 而它会掉。
 #     掉多少、掉在哪,押注记在 docs/第9课_实验台账.md 第七节。
 USE_GEN = False
+#  ★★★★★ 2026-09-30 加【说人话】开关 —— 默认关,老路一个字不变。
+#  【它做什么】把【代码查出来的事实】交给大模型组织成一句话,
+#    而数字和定性词【都锁死成占位符】—— 模型碰不到它们。
+#  ⚠ 为什么要开关:老路是 71 题基线的来源,动它就是在动基线。
+#    ★ 新路开着,老路一个字不改 —— 那才比得出"这个零件值不值"。
+USE_说人话 = False
 
 
 GEN_SYS = """你是民航数据助手。你只能依据【给定的材料】回答。
@@ -1228,6 +1234,20 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
     """
     ps = sorted(periods)
     lines, src = [], []
+    #  ═══ ⚠⚠⚠ 2026-09-30 修:这两个必须放在【所有分支的外面】 ═══
+    #  【症状 —— 实测,而它比"答错"严重得多】
+    #      数值·指标那 6 道题【整个崩了】:
+    #        ★ 去向 = "崩了"
+    #        答: UnboundLocalError: cannot access local variable 'facts'
+    #  【根因】
+    #      facts = [] 我一开始写在【那个大 if 里面】(和 vals 并排)——
+    #      ★ 而用它的替换在【函数级】的 return 之前。
+    #      走了别的分支的题 → facts 从没被赋值 → 撞上未定义变量 → 抛异常。
+    #  ★★ 教训:一个变量如果【在 return 之前被读】,
+    #     它的初始化就必须在【所有可能 return 的分支之外】。
+    #     ⚠ 而这条错【不是"答错",是"崩"】—— 那反而好:
+    #       抛异常至少看得见。要是它悄悄算出一个默认值,那 6 道题会【静默答错】。
+    facts = []                     # ★ 结构化的事实 —— 给"说人话"用
 
     # ── meta 类:样本量 ──────────────────────────────
     #  ⚠ 「机场数」也在这张表里(meta.机场数),和样本量同一行 —— 别把它当"不认识"的。
@@ -1525,6 +1545,15 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
                     src.append(f"capse.db / 综合得分 表,期次={p},机场={ap}"
                                + (f"  → PDF {_pdf(row[1])}" if len(row) > 1 and row[1] else ""))
                     vals.append((p, ap, row[0]))
+                    #  ★★★★★ 事实层 —— 见文件头那段。
+                    #    ⚠ 这一刀【只收现有的东西】(得分/名次/总数)。
+                    #      "与同档""与上期"这种参照是【第二刀】——
+                    #      它要靠 机场分档 表另算,不该混在第一刀里。
+                    facts.append({
+                        "机场": ap, "期次": p,
+                        "综合得分": row[0],
+                        "名次": rank[0], "总数": rank[1],
+                    })
             else:
                 rows = con.execute(
                     "SELECT 排名, 机场, 得分 FROM 综合得分排名 WHERE 期次=? ORDER BY 排名 LIMIT 5",
@@ -1550,6 +1579,27 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
                     lines.append(f"  → 并列({hi[2]})")
                 else:
                     lines.append(f"  → {hi[0]} {hi[1]} 更高({hi[2]} vs {lo[2]})")
+
+    #  ═══ ★★★★★ 2026-09-30:开了开关就走【说人话】——否则老路一个字不动 ═══
+    #  【为什么放在这儿】它正好在两个 return 之间 ——
+    #    ★ 覆盖"除样本量分支以外"的所有分支(那个分支自己 return,是第二刀)。
+    #  ⚠ 失败【不吞掉】:说人话跑不成 → 如实说,并【留老路的答案】。
+    #    ★ 那正是这一路的规矩:一处出问题,不该把已经拿到的答案拖死。
+    if USE_说人话 and facts:
+        try:
+            from 说人话 import 从事实说
+            一句, 校验 = 从事实说(q, facts)
+            if 校验.get("硬判"):
+                lines.append(f"⚠ 说人话这一步【校验没过】:{校验['硬判']}"
+                             f"—— 所以上面是老路原样拼的。")
+            elif 一句:
+                lines = [一句]
+                if 校验.get("表外"):
+                    lines.append(f"（附:这句里这几个数不在事实上,仅供参考"
+                                 f"{校验['表外']}）")
+        except Exception as e:
+             lines.append(f"⚠ 说人话这一步没跑成({type(e).__name__}:{e})"
+                          f"—— 所以上面是老路原样拼的。")
     return lines, src
 
 
@@ -2006,16 +2056,20 @@ def main():
     ap.add_argument("--merge", action="store_true",
                     help="开合并检索(关键词 + 向量)。★ 第一次跑会下载模型(约 100MB)")
     ap.add_argument("--gen", action="store_true", help="开生成层(让大模型作答,不是拼材料)")
+    ap.add_argument("--说人话", action="store_true",
+                    help="★ 把事实交给大模型组织语言(数字锁死成占位符);默认关,老路不变")
     ap.add_argument("--retry", action="store_true", help="开重试循环(生成→诊断→动作)")
     ap.add_argument("--ask", default="", metavar="问题",
                     help="只问这一个问题,不跑下面那套演示")
     args = ap.parse_args()
     #  ★ 用 global 改模块级开关 —— ask() 读的就是它们。
-    global USE_MERGE, USE_GEN, USE_RETRY
+    global USE_MERGE, USE_GEN, USE_RETRY, USE_说人话
     if args.merge:
         USE_MERGE = True
     if args.gen:
         USE_GEN = True
+    if getattr(a, "说人话", False):
+        USE_说人话 = True
     if args.retry:
         USE_RETRY = True
     if args.merge or args.gen or args.retry:
