@@ -1554,6 +1554,38 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
                         "综合得分": row[0],
                         "名次": rank[0], "总数": rank[1],
                     })
+                    #  ═══ ★★★★★ 2026-09-30:参照 —— 而那才是"让模型判断"的前提 ═══
+                    #  【为什么参照必须由代码算】
+                    #      "这个数算好还是差"这件事,模型要能说,
+                    #      ★ 前提是它手里有【比的对象】(同档平均 / 上期)。
+                    #      而那两个数【算得出来】—— 那就别问它。
+                    #  【★ 而这两个词也是代码定的档】
+                    #      "高 0.08" → "高 0.08";  "低了 0.01" → "基本持平"。
+                    #      ★★ 交给模型的话,它会把 0.01 说成"显著领先"——
+                    #         那叫【判断超标】,比数字错更难发现。
+                    #  ⚠ 用的是 report_data.build() —— ★ 报告那条路【已经算过这三种比法】,
+                    #    这里是【接线】,不是新写。规则:能复用的别抄一份。
+                    #  ⚠ 失败不吞,但也【不打断】—— 参照算不出就不放那两个键,
+                    #    骨架会自动退回"不带参照"那一版(缺什么就不说什么)。
+                    try:
+                        from report_data import build as _build
+                        from 说人话 import 说方向
+                        _d = _build(con, p, ap)
+                        _当 = (((_d.get("总体表现") or {}).get("同档") or {})
+                               .get("行业平均") or {}).get("value")
+                        if _当 is not None:
+                            _词 = 说方向(round(row[0] - _当, 2))
+                            if _词:
+                                facts[-1]["与同档"] = _词
+                        _差 = ((_d.get("变化与对比") or {}).get("差值") or {}).get("value")
+                        if _差 is not None:
+                            _词 = 说方向(_差)
+                            if _词:
+                                facts[-1]["与上期"] = _词
+                    except Exception as _e:
+                        #  ★ 参照没算出来【要说出来】—— 不说的话,
+                        #    用户只会看到"这次没提同档",而不知道为什么
+                        facts[-1]["_参照没算成"] = f"{type(_e).__name__}"
             else:
                 rows = con.execute(
                     "SELECT 排名, 机场, 得分 FROM 综合得分排名 WHERE 期次=? ORDER BY 排名 LIMIT 5",
