@@ -1660,7 +1660,31 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
         #    ⚠ 不看"说人话"之后的文本 —— 那个是模型组织的,不如代码拼的可靠。
         _用了 = sorted({m for _l in lines
                         for m in re.findall(r'\d{4}Q\d', str(_l))})
-        _句 = 数期次的差(periods, _用了)
+        #  ═══ ⚠⚠⚠ 2026-10-01 修:还差第三步 —— 「那一期有没有这个东西可查」 ═══
+        #  【症状 —— 这一版当天就误报】
+        #      「浦东2025Q4和2025Q3比，哪一项指标下降最多」
+        #      → 它报「2025Q3 没被查到」
+        #      ★★ 而真相:2025Q3 的【指标得分】库里根本没有
+        #         (指标得分表只有 2025Q4;综合得分表才有 9 期)
+        #  【根因】判据只看了两步:用户说几期 / 我查了几期。
+        #      ★ 缺的第三步:那一期【在这一类数据里存不存在】。
+        #      ★★ 而那正是那个老区分:「查不了」≠「查了没有」。
+        #  【修法】从 src 里抽【这一轮真用过哪几张表】——
+        #      src 每条都写着「capse.db / 指标得分 表,期次=…」,表名就在里面。
+        #      ★ 所以不用改任何分支:从输出反推。
+        _表 = {m for _s in src
+               for m in re.findall(r'capse\.db / ([^\s]+) 表', str(_s))}
+        _库里有的 = None
+        if _表:
+            _库里有的 = set()
+            for _t in _表:
+                #  ⚠ 表名是从【我们自己拼的 src】里抽的,不是用户输入 ——
+                #    但仍然只认库里的真表名,别的跳过。
+                if _t in {r[0] for r in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}:
+                    _库里有的 |= {r[0] for r in con.execute(
+                        f"SELECT DISTINCT 期次 FROM {_t}")}
+        _句 = 数期次的差(periods, _用了, _库里有的)
         if _句:
             lines.append(_句)
     except Exception as _e:
