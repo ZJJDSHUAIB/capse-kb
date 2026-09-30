@@ -1463,6 +1463,38 @@ def answer_sql(con, q, periods, airport, indicator, airports_in_q=None,
             raise CannotAnswer(
                 f"你问的期次里没有分档数据 —— 机场分档表只有 2025Q4 一期。(问句:{q})")
 
+    #  ═══ ★★★★★ 2026-10-01 加:问「某机场属于哪个档」 ═══
+    #  【怎么发现的 —— 用户造的五道复杂题里的第二道】
+    #      「2025Q4哪家机场综合得分最高，它属于哪个档」
+    #      ★ 第一件答了(前 5 名),第二件补漏说「单独跑过了,没补到东西」。
+    #      ★★ 而单独跑「北京大兴国际机场属于哪个档」→ 去向 = 判不出。
+    #      ★★★ 查了库:机场分档 表【有 42 条、4 个档位】——
+    #           ★ 所以不是"库里没有这条路",是【【没有查询分支接它】】。
+    #  【为什么它和下面那个「某档位是多少」不是一回事】
+    #      下面那个:句子里【有档位词】(「4000万级以上是多少」)→ 档位 → 各家
+    #      ★ 这一个:句子里【没有档位词】,问的是【机场 → 它属于哪档】
+    #      ★★ 判据不重叠,所以并排放,不抢。
+    #  ⚠ 覆盖范围的限制,和那个分支一样:机场分档表【只有 2025Q4 一期】——
+    #    别的期次答不了,那就明说(下面 if not _有没有 那一支会兜住)。
+    elif airport and re.search(r'属于.{0,4}档|是哪一?档|什么档|哪一档|哪个档', q):
+        _有没有 = False
+        for _p in ps:
+            _r = con.execute(
+                "SELECT 档位, 行业平均, 来源 FROM 机场分档 WHERE 期次=? AND 机场=?",
+                (_p, airport)).fetchone()
+            if not _r:
+                continue
+            _有没有 = True
+            _档名, _档均, _档源 = _r
+            lines.append(f"{_p} {airport} 属于【{_档名}】这一档"
+                         + (f"(该档行业平均 {_档均})" if _档均 is not None else ""))
+            src.append(f"capse.db / 机场分档 表,期次={_p},机场={airport}"
+                       + (f"  → PDF {_pdf(_档源)}" if _档源 else ""))
+        if not _有没有:
+            #  ★ 查了、没有 → 说清是哪一种"没有"
+            lines.append(f"⚠ {airport} 的【分档】数据:库里只有 2025Q4 一期有 ——"
+                         f"你要的 {sorted(ps)} 里没有。★ 不是我漏查,是【没有这条路】。")
+
     elif (_tier := find_tier(q, [r[0] for r in con.execute(
             "SELECT DISTINCT 档位 FROM 机场分档 WHERE 档位 IS NOT NULL")])):
         # ══ ★★★ 问「某档位是多少」(2026-09-22,挑战集逼出来的)═══════
