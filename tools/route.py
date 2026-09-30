@@ -688,7 +688,22 @@ def route(con, q, airports, indicators, intent=None):
     elif doc_section:
         wants_num, wants_prose = False, True
     else:
-        wants_num   = bool(indicator) or bool(NUMERIC.search(q))
+        #  ══ ★★★★★ 2026-10-01:【位置词】也算"要数" ══════════════
+        #  【怎么发现的 —— 题66 的第二段】
+        #      「2025Q4合肥新桥国际机场排第几，【最后一名是谁】」
+        #      第一段好办;第二段补做时拼成「2025Q4 最后一名是谁」→ ★ 判不出:
+        #        「问法既不像要数也不像要话」
+        #      ★ 而对比:「2025Q4【前5名】是谁」→ 走 SQL ✓
+        #      ★★ 差别只在 NUMERIC 那张表里有「前\s*\d」、没有"最后一名"。
+        #      ★★★ 也就是说:【同一个量的两头,只装了一头】—— 又是那个形状。
+        #  【★ 修法:复用 route 顶部那张 位置词,不往 NUMERIC 里再加词】
+        #      位置词 里本来就有全套(第几|前N名|最高|最低|最后|垫底|倒数…)——
+        #      它是 2026-10-01 为"…里那条规则让不让路"建的,说的是同一件事:
+        #      【这句话在问一个位置/极值】。
+        #      ⚠ 而"问位置"一定是【能算的】(库里就有那一列),
+        #        所以它归到要数这边是对的方向。
+        wants_num   = (bool(indicator) or bool(NUMERIC.search(q))
+                       or bool(位置词.search(q)))
         wants_prose = bool(PROSE.search(q))
         #  ═══ ★★★★★ 2026-10-01 加:【"档"这个字 + 点了名的机场】 ═══
         #  【怎么发现的】
