@@ -345,7 +345,28 @@ MAX_RETRY = 3              # ★ 上限 3(业界的 2~3 次;先照抄,以后自�
 #  ⚠ 触发条件只放了一条,而且它是【硬判据】:检索回来 0 条。
 #    为什么只放这一条:别的"检索不够好"没有硬判据 ——
 #    ★ 而"0 条"是 len(hits) == 0,代码一眼可查,不靠判分。
-USE_LOOP = False
+#  ══════════════════════════════════════════════════════════════════
+#  ★★★★★ 2026-10-01:从 False 改成 True —— 而它就是【为题51 做的】
+#  ══════════════════════════════════════════════════════════════════
+#  【上面那段注释里的"真实案例"写的就是题51】
+#      「★★ 真实案例:题51 走关键词那条路时只给出 1 条(2024Q2-P07),
+#         而答案页 2024Q2-P14 压根【没被取到】」
+#    ★ 而它【默认是关的】—— 于是题51 一直没被修好,一直报「检索 0 条」。
+#
+#  【实测:为什么"只是关着"就修不好(2026-10-01)】
+#      题51「2024Q2的著作权声明说了什么」
+#        检索词 = 「著作权声明 版权声明」→ 命中 []
+#      ★ 而那一页 P14 的正文里【就写着】「…的著作权归属航联传播…」
+#      ★★ 匹配不上的原因:检索词是【连在一起的四个字】,而原文里没有这四个字,
+#         只有"著作权"和"法律声明"分开出现。
+#      ★★★ 所以"0 条时换个词重走"正是治它的 —— 而那条路存在,只是没开。
+#
+#  【⚠ 为什么它当初关着 —— 注释里没写理由,所以只能说清代价】
+#      开它 = 每个"检索 0 条"的题【多一次大模型调用】(换词)。
+#      ★ 而触发条件是【硬判据】(len(hits)==0),不是"感觉检索得不好" ——
+#        所以它【只在真的查不到时】才花钱。
+#  ★ 会不会变坏?—— 跑全量看。判据:0 条的题变好,别的题【一个字不动】。
+USE_LOOP = True
 MAX_LOOP = 3               # ★ 同上,照抄业界的 2~3
 SEARCH_K = 5               # 检索取几条 —— 和 answer_search 的默认值保持一致
 
@@ -1954,6 +1975,43 @@ def retrieve(con, kw, periods=None, k=5):
     return hits, src, notes
 
 
+def 零条时换词(con, q, periods, hits, src, page_notes, kw):
+    """★ 检索回来 0 条时,换个检索词重走。返回 (hits, src, page_notes, kw, 日志)。
+
+    ══════════════════════════════════════════════════════════════════
+    ★★★★★ 2026-10-01:从 ask() 里抽出来 —— 因为 agent 那条路也要它
+    ══════════════════════════════════════════════════════════════════
+    【为什么】
+        agent 那条路的检索走 `_查原文` → `answer_search`,而【这个循环
+        原来只在 ask 的检索分支里】——
+        ★ 实测:题51 在 ask 上修好了(换词第1次取回 2024Q2-P14),
+          而 agent 上还是「答不出」。
+        ★★ 又是"同一条规则只装一条路"。
+    【★ 而它不是新写的:一个字的行为都没改,只是从 ask() 里搬出来】
+    【⚠ 触发条件是【硬判据】:len(hits)==0 —— 代码一眼可查,不靠判分。
+       别的"检索不够好"没有硬判据,所以不放进来。】
+    """
+    日志 = []
+    if not (USE_LOOP and not hits):
+        return hits, src, page_notes, kw, 日志
+    tried = [kw]
+    for _att in range(1, MAX_LOOP + 1):
+        try:
+            kw2 = rewrite_query_alt(q, tried)
+        except LLMError:
+            日志.append("换词循环:模型没连上,停")
+            break
+        if not kw2 or kw2 in tried:
+            日志.append(f"换词第{_att}次:它又写出了「{kw2}」,停")
+            break
+        tried.append(kw2)
+        h2, s2, n2 = retrieve(con, kw2, periods=periods, k=SEARCH_K)
+        日志.append(f"换词第{_att}次:「{kw2}」→ {len(h2)} 条")
+        if h2:
+            return h2, s2, n2, kw2, 日志
+    return hits, src, page_notes, kw, 日志
+
+
 def answer_search(con, q, k=5, periods=None):
     """叙述型。返回 (命中的 chunk, 来源, 查询词, 多版本说明列表)。
 
@@ -2242,23 +2300,11 @@ def ask(con, q, airports, indicators):
     #     而答案页 2024Q2-P14 压根【没被取到】—— 生成层怎么挑都挑不出来。
     #  ★★★ 触发条件是【硬判据】:检索回来 0 条 —— len(hits)==0,代码一眼可查。
     #       别的"检索不够好"没有硬判据,所以不放进来。
-    if USE_LOOP and not hits:
-        tried = [kw]
-        for _att in range(1, MAX_LOOP + 1):
-            try:
-                kw2 = rewrite_query_alt(q, tried)
-            except LLMError:
-                out["备注"].append("换词循环:模型没连上,停")
-                break
-            if not kw2 or kw2 in tried:
-                out["备注"].append(f"换词第{_att}次:它又写出了「{kw2}」,停")
-                break
-            tried.append(kw2)
-            h2, s2, n2 = retrieve(con, kw2, periods=periods, k=SEARCH_K)
-            out["备注"].append(f"换词第{_att}次:「{kw2}」→ {len(h2)} 条")
-            if h2:
-                hits, src, page_notes, kw = h2, s2, n2, kw2
-                break
+    #  ★ 2026-10-01:循环搬到 零条时换词() —— agent 那条路也要它。
+    #    这里只负责把日志记进备注,判据一个字没动。
+    hits, src, page_notes, kw, _换词日志 = 零条时换词(
+        con, q, periods, hits, src, page_notes, kw)
+    out["备注"].extend(_换词日志)
 
     out["来源"] = src
     out["备注"].append(f"检索用词:{kw}")
