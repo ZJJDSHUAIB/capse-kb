@@ -134,20 +134,23 @@ class 会话表:
         self._串行 = 串行
         self._全局锁 = threading.Lock()      # ★ 只在 --串行 时用(做对照)
         self._全局智能体 = None
+        #  ★ 会话存档是【全局一个】—— 它自己按 会话id 分行,
+        #    ⚠ 而"每个会话一个 存盘 对象"会开出很多 sqlite 连接(没必要)。
+        from 会话存档 import 存盘
+        self.存 = 存盘(Path(DB).parent / "会话存档_api.db")
 
-    def _造一个(self, con):
-        """优先用【能存盘】的那版(和 serve.py 同一个取舍,见那边的注释)。"""
-        try:
-            import sqlite3 as _s
-            from langgraph.checkpoint.sqlite import SqliteSaver
-            from agent_langgraph import LG智能体
-            #  ⚠ check_same_thread=False —— 这个连接会被线程池里的线程用
-            saver = SqliteSaver(_s.connect(
-                Path(DB).parent / "会话存档_api.db", check_same_thread=False))
-            return LG智能体(con, saver=saver, thread_id="api")
-        except ImportError:
-            from agent import 智能体
-            return 智能体(con)
+    def _造一个(self, con, 会话id="默认"):
+        """★ 2026-10-03 改:和 serve.py 一样 —— 走 agent,存盘用 会话存档。
+
+        ⚠ 原来这里是"优先 LG智能体(为了存盘)"—— 而那些理由现在【不成立】了:
+          会话存档.py 用 sqlite 就能存,不用整个执行器;
+          而 LG 那条路缺 5 处业务判断。详见 serve.py 的 _建智能体 那段注释。
+        ⚠⚠ 会话id 【必须传进来】:原来这里收不到它,而靠外面那句
+             `智能体.thread_id = 会话id` 打补丁 —— ★ 那是 langgraph 的字段,
+             agent 没有。现在改成从构造函数就带上。
+        """
+        from agent import 智能体
+        return 智能体(con, 存档=self.存, 会话id=会话id)
 
     def 拿(self, 会话id):
         """取这一段会话的智能体。★ 没有就造一个 —— 顺带给它一条自己的连接。"""
@@ -156,7 +159,7 @@ class 会话表:
             with self._表锁:
                 if self._全局智能体 is None:
                     con = sqlite3.connect(DB, check_same_thread=False)
-                    self._全局智能体 = self._造一个(con)
+                    self._全局智能体 = self._造一个(con, 会话id)
             return self._全局智能体, self._全局锁
 
         with self._表锁:
@@ -164,10 +167,13 @@ class 会话表:
                 con = sqlite3.connect(DB, check_same_thread=False)
                 #  ★ 这一段会话自己的锁 —— 同一段会话里仍要串行(记忆是有状态的),
                 #    但【不同会话之间不再互相等】。
-                智能体 = self._造一个(con)
-                #  ⚠ thread_id 要分开,否则 langgraph 的存档会串
-                if hasattr(智能体, "thread_id"):
-                    智能体.thread_id = 会话id
+                #  ★ 2026-10-03:会话id 【从这里就传下去】——
+                #    原来靠外面那句话打补丁:
+                #        `智能体.thread_id = 会话id`  (⚠ 那是 langgraph 的字段)
+                #    ★ 换成 agent 之后那句【没有作用了】(agent 没这个字段),
+                #      而"没作用"是【静默的】:存档会全串到同一个会话里。
+                #    ★★ 所以改成从构造函数带 —— 一处在构造时就定好,后面不用补。
+                智能体 = self._造一个(con, 会话id)
                 #  ⚠⚠ 2026-09-26 实测踩到的坑:这里【必须】是 threading.Lock,
                 #    不是 asyncio.Lock。
                 #    【为什么 —— 我第一版写的就是 asyncio.Lock,当场报错】
@@ -305,8 +311,13 @@ def main():
     _不挪线程池 = a.不挪线程池
     _会话 = 会话表(串行=a.串行)
     con = sqlite3.connect(DB, check_same_thread=False)
-    _会话模式 = ("★ 会话会存盘" if _有langgraph() else
-                 "⚠ 内存版:关掉就没了。想存盘:pip install -r requirements-langgraph.txt")
+    #  ══ ★★★★★ 2026-10-03:这句原来是"装没装 langgraph"决定的 ══
+    #  【原来】装得上 → "★ 会话会存盘";装不上 → "⚠ 内存版,关掉就没了"
+    #  ★ 而现在【存盘走 tools/会话存档.py(一个 sqlite 小 KV)】——
+    #    不依赖 langgraph,所以这句【无条件】成立。
+    #  ⚠ 不改的话会【说反】:明明是内存版的机器上,它说"会存盘";
+    #    而装了 langgraph 的机器上,它会说对原因却不对理由。
+    _会话模式 = "★ 会话会存盘 —— 关掉再打开,还能接着问上一句的话题"
 
     print(f"★ 接口文档  http://127.0.0.1:{a.port}/docs")
     print(f"★ 模式      {'串行(对照)' if a.串行 else '每会话独立'}"

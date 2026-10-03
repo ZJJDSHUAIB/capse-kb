@@ -56,20 +56,35 @@ _会话模式 = ""          #  ★ 给页面看的那一句话:这次是存盘�
 
 
 def _建智能体(con):
-    """返回 (智能体, 给页面看的一句话)。★ 那一句话是【必须】的。"""
-    try:
-        import sqlite3 as _s
-        from langgraph.checkpoint.sqlite import SqliteSaver
-        from agent_langgraph import LG智能体
-        #  ⚠ check_same_thread=False —— 服务是多线程的,而 sqlite 默认不许跨线程
-        saver = SqliteSaver(_s.connect(会话存档, check_same_thread=False))
-        return (LG智能体(con, saver=saver, thread_id="网页"),
-                "★ 会话会存盘 —— 关掉页面再打开,还能接着问上一句的话题")
-    except ImportError:
-        from agent import 智能体
-        return (智能体(con),
-                "⚠ 内存版:关掉页面,会话就没了。"
-                "想让它存盘:pip install -r requirements-langgraph.txt")
+    """返回 (智能体, 给页面看的一句话)。★ 那一句话是【必须】的。
+
+    ══════════════════════════════════════════════════════════════════
+    ★★★★★ 2026-10-03:从「优先走 LangGraph」改成【就走 agent】
+    ══════════════════════════════════════════════════════════════════
+    【原来是什么样,而它坏在哪】
+        原来是 try: 用 LG智能体(带 langgraph 的 SqliteSaver) ——
+                    理由是【会话能存盘】;装不上才退回 agent。
+      ★ 而 LG 那条路(= agent_graph 那 7 个节点)【缺了 5 处业务判断】:
+          ① 像说偏好  ② 拒答闸  ③ 反问闸  ④ 计划路(planner)  ⑤ 计划路也更新记忆
+      ★★ 于是"能存盘"和"业务完整"成了【二选一】——
+         而【两条评估尺子量的都是 agent】→
+         ★★★ 那个 98.3% 【不代表线上服务的行为】。它量的不是同一条路。
+    【★★ 而"存盘"本来不需要整个执行器】
+        会话要存的东西,agent_memory.会话 早就有 导出() / 从()
+        (那是 agent_graph 当初为"记忆放进 State"加的)。
+        → 缺的只是一个【把那份 dict 放哪儿】—— 那就是 tools/会话存档.py。
+    【★ 所以现在:一条业务逻辑(agent),存盘换成一个 sqlite 小 KV】
+        ⚠ agent_langgraph.py / agent_graph.py 【留着,不动】——
+          它们是【执行器对照】(README 里那条"三版结构 6/6 一样"),
+          只是【不再承担服务】。★ 而"对照"和"上线"本来就是两件事。
+    """
+    from agent import 智能体
+    from 会话存档 import 存盘
+    from paths import DB as _DB
+    from pathlib import Path as _P
+    存 = 存盘(_P(_DB).parent / "会话存档.db")
+    return (智能体(con, 存档=存, 会话id="网页"),
+            "★ 会话会存盘 —— 关掉页面再打开,还能接着问上一句的话题")
 
 
 # ══════════════════════════════════════════════════════════════════

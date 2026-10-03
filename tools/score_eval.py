@@ -564,14 +564,49 @@ def _走智能体的去向(r):
     return "?"
 
 
-def query_all(rows, 走智能体=False):
+def query_all(rows, 走智能体=False, 走图=False):
     con = sqlite3.connect(DB)
     ap, ind = load_airports(con), load_indicators(con)
     out = []
     for r in rows:
         print(f"  问 {r['题号']:>2}: {str(r['问题'])[:50]}")
         try:
-            if 走智能体:
+            #  ══════════════════════════════════════════════════════════
+            #  ⚠⚠⚠ 2026-10-03 修:这个 if 原来写的是 `if 走智能体:`,
+            #     而我把 `--走图` 塞在了它【里面】—— 于是
+            #     ★ 只给 `--走图` 时(`走智能体=False`)那个 if 【根本不进】,
+            #       它走的是【普通的 ask】。
+            #     ★★ 症状:我拿"两条都走 ask"的跑分比,得出"两条路一模一样"——
+            #       而那是个【假的结论】,而它看起来像个好消息。
+            #     ★★★ 又一次"尺子坏了,说没差别"。
+            #     → 改成 `走图 or 走智能体`:两个开关【各自独立】。
+            if 走图 or 走智能体:
+                #  ══ ★★★★★ 2026-10-03:--走图 —— 量【图那条路】 ══
+                #  【为什么要它】
+                #      服务(serve/serve_api)原来走的是图那条路,而
+                #      ★【两条评估尺子量的都是 agent】→ 那个数不代表线上。
+                #      现在服务已改成走 agent;★ 而这条开关留着,是为了
+                #      能【随时量出那两条路差多少】—— 而不是靠推理。
+                #  ⚠ 它只用于【对照】,不是主链(README 里那条"执行器对照")。
+                if 走图:
+                    from agent_graph import 图智能体
+                    from 覆盖检查 import 答了啥
+                    _a = 图智能体(con)
+                    _r = _a.问(r["问题"])
+                    _来源 = [s for v in (_r.get("结果") or {}).values()
+                            if isinstance(v, dict)
+                            for s in (v.get("来源") or [])]
+                    o = {"去向": _走智能体的去向(_r),
+                         "答案": (答了啥({"结果": _r.get("结果") or {}}) or
+                                 str(_r.get("反问") or "")).split("\n"),
+                         "来源": _来源, "警告": [],
+                         "备注": list(_r.get("说明") or []), "标注": []}
+                    rec = {"去向": o.get("去向", "?"),
+                           "系统答": "\n".join(o.get("答案") or []),
+                           "模型答": None, "来源": o.get("来源") or [],
+                           "警告": [], "过程": o.get("备注") or []}
+                    out.append(rec)
+                    continue
                 #  ★★★ 2026-09-23 加:让 65 题也能走【agent 那条路】。
                 #  【为什么 —— 实测抓到的自欺】
                 #      planner 接在了 agent 那条路上，而评估集量的是 ask 那条路 ——
@@ -770,6 +805,8 @@ def main():
     ap.add_argument("--no-cache", action="store_true",
                     help="★ 第11课:不用判分缓存 —— 量【判分自己稳不稳】时必须加,"
                          "否则同一份答案全命中缓存,读到的稳定是假的")
+    ap.add_argument("--走图", action="store_true",
+                    help="★ 走【图那条路】再跑一遍 —— 量它和 agent 差多少")
     ap.add_argument("--走agent", action="store_true",
                     help="答案从【智能体那条路】拿，而不是 ask —— ★ 因为 planner 接在那条路上")
     ap.add_argument("--说人话", action="store_true",
@@ -871,7 +908,7 @@ def main():
         #  ★ 修:直接取属性,【不给默认值】——
         #    名字写错就该 AttributeError,而不是静默变成 False。
         #    ★★ 那正是这一天的教训:「一个兜底会把失败变成静默降级」。
-        gots = query_all(rows, 走智能体=args.走agent)
+        gots = query_all(rows, 走智能体=args.走agent, 走图=args.走图)
         OUT.write_text(json.dumps(gots, ensure_ascii=False, indent=1), encoding="utf-8")
 
     res = report(rows, gots)
